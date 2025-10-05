@@ -1,0 +1,17 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      # Mount the project directory
+      - ../..:/workspaces:cached
+      # Mount the current directory as the workspace
+      - .:/workspace:cached
+    # Overrides default command so things don't shut down after the process ends
+    command: sleep infinity
+    # Keep container running
+    stdin_open: true
+    tty: true
+    # Use the same user as the host to avoid permission issues
+    user: node
