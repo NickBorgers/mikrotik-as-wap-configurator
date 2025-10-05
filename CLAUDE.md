@@ -62,7 +62,7 @@ const BAND_TO_INTERFACE = {
 3. Commit with version message
 4. Create git tag: `git tag -a vX.Y.Z -m "description"`
 5. Push: `git push origin main && git push origin vX.Y.Z`
-6. GitHub Actions automatically builds/publishes Docker image to `nickborgers/mikrotik-as-wap-configurator`
+6. GitHub Actions automatically builds/publishes Docker image to `ghcr.io/nickborgers/mikrotik-as-wap-configurator`
 
 ### Docker Image
 
