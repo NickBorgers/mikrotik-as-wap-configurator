@@ -28,10 +28,16 @@ ssids:
 
 ### Added
 
+- **Virtual WiFi interface support**: Multiple SSIDs can now broadcast on the same frequency band
+- **WiFi datapath VLAN tagging**: Proper VLAN isolation for WiFi clients
 - **Per-SSID passphrases**: Each SSID can now have its own password
 - **Band selection**: Choose 2.4GHz, 5GHz, or both for each SSID
 - **Multi-VLAN support**: Different SSIDs can be on different VLANs with different passwords
 - **Validation**: Configuration validation checks for required fields and valid band names
+- **Docker support**: Official Docker image with multi-architecture support (linux/amd64, linux/arm64)
+- **Automated publishing**: GitHub Actions workflow for Docker Hub releases
+- **Comprehensive documentation**: DOCKER.md, GETTING-STARTED.md, QUICK-REFERENCE.md
+- **MIT License**: Open source license added
 
 ### Benefits
 
