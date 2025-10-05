@@ -1,0 +1,29 @@
+{
+  "name": "network-config-as-code",
+  "version": "1.0.0",
+  "description": "YAML-based configuration management for MikroTik network devices",
+  "main": "mikrotik-safe-configure.js",
+  "scripts": {
+    "apply": "node apply-config.js",
+    "inspect": "node mikrotik-inspect.js",
+    "verify": "node mikrotik-verify.js",
+    "wifi-inspect": "node mikrotik-wifi-inspect.js"
+  },
+  "keywords": [
+    "mikrotik",
+    "network",
+    "configuration",
+    "infrastructure-as-code",
+    "vlan",
+    "wifi"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "js-yaml": "^4.1.0",
+    "ssh2": "^1.17.0"
+  },
+  "bin": {
+    "mikrotik-apply": "./apply-config.js"
+  }
+}

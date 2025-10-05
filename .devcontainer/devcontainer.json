@@ -8,7 +8,8 @@
   "customizations": {
     "vscode": {
       "extensions": [
-        "ms-vscode.vscode-json"
+        "ms-vscode.vscode-json",
+        "bierner.markdown-mermaid"
       ]
     }
   },

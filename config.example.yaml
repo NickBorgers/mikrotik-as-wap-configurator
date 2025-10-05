@@ -1,0 +1,40 @@
+# MikroTik Network Configuration Example
+
+device:
+  host: 192.168.88.1
+  username: admin
+  password: admin
+
+# Management interfaces (untagged on VLAN 1)
+managementInterfaces:
+  - ether1
+  - ether2
+
+# SSID Configuration
+# Each SSID can be broadcast on 2.4GHz, 5GHz, or both bands
+ssids:
+  # SSID on both bands (typical use case)
+  - ssid: MyNetwork
+    passphrase: secure-password-here
+    vlan: 100
+    bands:
+      - 2.4GHz
+      - 5GHz
+
+  # SSID on 5GHz only (for faster devices)
+  - ssid: MyNetwork-5G
+    passphrase: secure-password-here
+    vlan: 100
+    bands:
+      - 5GHz
+
+  # Guest network on both bands with different VLAN
+  - ssid: Guest-WiFi
+    passphrase: guest-password
+    vlan: 200
+    bands:
+      - 2.4GHz
+      - 5GHz
+
+# Supported bands: 2.4GHz, 5GHz
+# Supported VLANs: Any VLAN ID (100, 200, etc.)

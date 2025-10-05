@@ -1,0 +1,26 @@
+# Git
+.git
+.gitignore
+.github
+
+# Node
+node_modules
+npm-debug.log
+
+# Documentation (not needed in container)
+README.md
+GETTING-STARTED.md
+QUICK-REFERENCE.md
+CHANGELOG.md
+SUCCESS-SUMMARY.md
+
+# Development files
+.devcontainer
+*.md
+
+# Config files (user provides their own)
+config.yaml
+
+# Scripts not needed in container
+configure-device.sh
+wait-for-device.js
