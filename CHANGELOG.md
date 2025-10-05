@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.1.3] - GitHub Container Registry Migration
+
+### Changed
+- **Breaking Change**: Docker images now published to GitHub Container Registry (ghcr.io)
+- Updated all documentation to reference `ghcr.io/nickborgers/mikrotik-as-wap-configurator`
+- GitHub Actions workflow now uses GITHUB_TOKEN for authentication
+- Updated README badges to point to GitHub Container Registry
+
+### Migration Guide
+Update your docker commands from:
+```bash
+docker run nickborgers/mikrotik-as-wap-configurator
+```
+to:
+```bash
+docker run ghcr.io/nickborgers/mikrotik-as-wap-configurator
+```
+
 ## [2.1.2] - CI/CD Fix
 
 ### Fixed
