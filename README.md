@@ -1,5 +1,9 @@
 # Network Configuration as Code - MikroTik
 
+[![Docker Hub](https://img.shields.io/docker/v/nickborgers/mikrotik-as-wap-configurator?label=docker&logo=docker)](https://hub.docker.com/r/nickborgers/mikrotik-as-wap-configurator)
+[![Docker Image Size](https://img.shields.io/docker/image-size/nickborgers/mikrotik-as-wap-configurator/latest)](https://hub.docker.com/r/nickborgers/mikrotik-as-wap-configurator)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 YAML-based configuration management for MikroTik network devices with safe, repeatable deployments.
 
 ## Network Topology
@@ -39,13 +43,25 @@ graph TB
 
 > **New to this?** See [GETTING-STARTED.md](GETTING-STARTED.md) for detailed first-time setup instructions.
 
-### Prerequisites
+### Docker (Recommended)
 
+```bash
+# Get example configuration
+docker run nickborgers/mikrotik-as-wap-configurator example > config.yaml
+
+# Edit config.yaml with your settings, then apply
+docker run -v $(pwd)/config.yaml:/config/config.yaml \
+  nickborgers/mikrotik-as-wap-configurator
+```
+
+See [DOCKER.md](DOCKER.md) for complete Docker documentation.
+
+### Node.js Installation
+
+**Prerequisites:**
 - Node.js (LTS version)
 - SSH access to MikroTik device
 - MikroTik RouterOS v7+ (with WiFi package)
-
-### Installation
 
 ```bash
 npm install
