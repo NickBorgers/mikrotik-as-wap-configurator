@@ -1,7 +1,6 @@
 # Network Configuration as Code - MikroTik
 
-[![Docker Hub](https://img.shields.io/docker/v/nickborgers/mikrotik-as-wap-configurator?label=docker&logo=docker)](https://hub.docker.com/r/nickborgers/mikrotik-as-wap-configurator)
-[![Docker Image Size](https://img.shields.io/docker/image-size/nickborgers/mikrotik-as-wap-configurator/latest)](https://hub.docker.com/r/nickborgers/mikrotik-as-wap-configurator)
+[![GitHub Container Registry](https://img.shields.io/badge/ghcr.io-mikrotik--as--wap--configurator-blue?logo=docker)](https://github.com/NickBorgers/mikrotik-as-wap-configurator/pkgs/container/mikrotik-as-wap-configurator)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 YAML-based configuration management for MikroTik network devices with safe, repeatable deployments.
@@ -47,11 +46,11 @@ graph TB
 
 ```bash
 # Get example configuration
-docker run nickborgers/mikrotik-as-wap-configurator example > config.yaml
+docker run ghcr.io/nickborgers/mikrotik-as-wap-configurator example > config.yaml
 
 # Edit config.yaml with your settings, then apply
 docker run -v $(pwd)/config.yaml:/config/config.yaml \
-  nickborgers/mikrotik-as-wap-configurator apply
+  ghcr.io/nickborgers/mikrotik-as-wap-configurator apply
 ```
 
 See [DOCKER.md](DOCKER.md) for complete Docker documentation.

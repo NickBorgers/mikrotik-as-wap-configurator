@@ -5,7 +5,7 @@
 ### 1. Get Example Configuration
 
 ```bash
-docker run nickborgers/mikrotik-as-wap-configurator example > config.yaml
+docker run ghcr.io/nickborgers/mikrotik-as-wap-configurator example > config.yaml
 ```
 
 ### 2. Edit Configuration
@@ -35,7 +35,7 @@ ssids:
 
 ```bash
 docker run -v $(pwd)/config.yaml:/config/config.yaml \
-  nickborgers/mikrotik-as-wap-configurator
+  ghcr.io/nickborgers/mikrotik-as-wap-configurator
 ```
 
 ## Usage Examples
@@ -43,27 +43,27 @@ docker run -v $(pwd)/config.yaml:/config/config.yaml \
 ### Show Help
 
 ```bash
-docker run nickborgers/mikrotik-as-wap-configurator help
+docker run ghcr.io/nickborgers/mikrotik-as-wap-configurator help
 ```
 
 ### Get Example Configuration
 
 ```bash
-docker run nickborgers/mikrotik-as-wap-configurator example > config.yaml
+docker run ghcr.io/nickborgers/mikrotik-as-wap-configurator example > config.yaml
 ```
 
 ### Apply to Default Device
 
 ```bash
 docker run -v $(pwd)/config.yaml:/config/config.yaml \
-  nickborgers/mikrotik-as-wap-configurator
+  ghcr.io/nickborgers/mikrotik-as-wap-configurator
 ```
 
 ### Apply to Specific Device IP
 
 ```bash
 docker run -v $(pwd)/config.yaml:/config/config.yaml \
-  nickborgers/mikrotik-as-wap-configurator 192.168.1.50
+  ghcr.io/nickborgers/mikrotik-as-wap-configurator 192.168.1.50
 ```
 
 ### Using Docker Compose
@@ -75,7 +75,7 @@ version: '3.8'
 
 services:
   mikrotik-config:
-    image: nickborgers/mikrotik-as-wap-configurator:latest
+    image: ghcr.io/nickborgers/mikrotik-as-wap-configurator:latest
     volumes:
       - ./config.yaml:/config/config.yaml:ro
     network_mode: bridge  # Needs network access to reach devices
@@ -97,13 +97,13 @@ The container expects your configuration at `/config/config.yaml`:
 **On Windows (PowerShell):**
 ```powershell
 docker run -v ${PWD}/config.yaml:/config/config.yaml `
-  nickborgers/mikrotik-as-wap-configurator
+  ghcr.io/nickborgers/mikrotik-as-wap-configurator
 ```
 
 **On Windows (CMD):**
 ```cmd
 docker run -v %cd%/config.yaml:/config/config.yaml ^
-  nickborgers/mikrotik-as-wap-configurator
+  ghcr.io/nickborgers/mikrotik-as-wap-configurator
 ```
 
 ## Network Requirements
@@ -124,7 +124,7 @@ The container must be able to reach your MikroTik device's IP address via SSH (p
 **Recommended for production:**
 ```bash
 docker run -v $(pwd)/config.yaml:/config/config.yaml \
-  nickborgers/mikrotik-as-wap-configurator:2.0.0
+  ghcr.io/nickborgers/mikrotik-as-wap-configurator:2.0.0
 ```
 
 ## Multi-Architecture Support
@@ -162,7 +162,7 @@ ERROR: No configuration file found at /config/config.yaml
 Ensure you're mounting the config file correctly:
 ```bash
 docker run -v $(pwd)/config.yaml:/config/config.yaml \
-  nickborgers/mikrotik-as-wap-configurator
+  ghcr.io/nickborgers/mikrotik-as-wap-configurator
 ```
 
 ### Cannot Connect to Device
@@ -191,7 +191,7 @@ If you get permission errors on Windows, try:
 1. Use absolute paths:
    ```powershell
    docker run -v C:\path\to\config.yaml:/config/config.yaml `
-     nickborgers/mikrotik-as-wap-configurator
+     ghcr.io/nickborgers/mikrotik-as-wap-configurator
    ```
 
 2. Share the drive in Docker Desktop settings
@@ -244,7 +244,7 @@ jobs:
       - name: Configure MikroTik
         run: |
           docker run -v $(pwd)/config.yaml:/config/config.yaml \
-            nickborgers/mikrotik-as-wap-configurator
+            ghcr.io/nickborgers/mikrotik-as-wap-configurator
 ```
 
 ### GitLab CI Example
@@ -256,7 +256,7 @@ configure-mikrotik:
     - docker:dind
   script:
     - docker run -v $(pwd)/config.yaml:/config/config.yaml
-        nickborgers/mikrotik-as-wap-configurator
+        ghcr.io/nickborgers/mikrotik-as-wap-configurator
 ```
 
 ## Advanced Usage
@@ -267,7 +267,7 @@ configure-mikrotik:
 for ip in 192.168.1.{10..20}; do
   echo "Configuring $ip..."
   docker run -v $(pwd)/config.yaml:/config/config.yaml \
-    nickborgers/mikrotik-as-wap-configurator $ip
+    ghcr.io/nickborgers/mikrotik-as-wap-configurator $ip
 done
 ```
 
@@ -281,7 +281,7 @@ aws secretsmanager get-secret-value \
 
 # Apply configuration
 docker run -v $(pwd)/config.yaml:/config/config.yaml \
-  nickborgers/mikrotik-as-wap-configurator
+  ghcr.io/nickborgers/mikrotik-as-wap-configurator
 
 # Clean up
 rm config.yaml
@@ -292,4 +292,4 @@ rm config.yaml
 - **Documentation**: [README.md](README.md)
 - **Getting Started**: [GETTING-STARTED.md](GETTING-STARTED.md)
 - **Issues**: https://github.com/NickBorgers/mikrotik-as-wap-configurator/issues
-- **Docker Hub**: https://hub.docker.com/r/nickborgers/mikrotik-as-wap-configurator
+- **GitHub Container Registry**: https://github.com/NickBorgers/mikrotik-as-wap-configurator/pkgs/container/mikrotik-as-wap-configurator
