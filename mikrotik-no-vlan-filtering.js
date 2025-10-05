@@ -125,6 +125,12 @@ async function configureMikroTik(config = {}) {
     // Step 2: Process each SSID
     console.log('\n=== Step 2: Configuring SSIDs ===');
 
+    // Track which interfaces have been used for each band
+    const bandUsage = {
+      '2.4GHz': 0,
+      '5GHz': 0
+    };
+
     for (const ssidConfig of ssids) {
       const { ssid, passphrase, vlan, bands } = ssidConfig;
 
@@ -140,14 +146,47 @@ async function configureMikroTik(config = {}) {
 
       // Configure each band this SSID should broadcast on
       for (const band of bands) {
-        const wifiInterface = BAND_TO_INTERFACE[band];
+        const masterInterface = BAND_TO_INTERFACE[band];
 
-        if (!wifiInterface) {
+        if (!masterInterface) {
           console.log(`  ⚠️  Unknown band: ${band}, skipping`);
           continue;
         }
 
+        // Determine which interface to use (master or virtual)
+        let wifiInterface;
+        let isVirtual = false;
+
+        if (bandUsage[band] === 0) {
+          // First SSID for this band - use master interface
+          wifiInterface = masterInterface;
+        } else {
+          // Additional SSID for this band - create virtual interface
+          wifiInterface = `${masterInterface}-ssid${bandUsage[band] + 1}`;
+          isVirtual = true;
+        }
+
+        bandUsage[band]++;
+
         try {
+          // Create virtual interface if needed
+          if (isVirtual) {
+            try {
+              await mt.exec(
+                `/interface/wifi add ` +
+                `master-interface=${masterInterface} ` +
+                `name="${wifiInterface}"`
+              );
+              console.log(`  ✓ Created virtual interface ${wifiInterface}`);
+            } catch (e) {
+              if (e.message.includes('already have') || e.message.includes('exists')) {
+                console.log(`  ✓ Virtual interface ${wifiInterface} already exists`);
+              } else {
+                throw e;
+              }
+            }
+          }
+
           // Create or update datapath for VLAN tagging
           const datapathName = `${wifiInterface}-vlan${vlan}`;
 
