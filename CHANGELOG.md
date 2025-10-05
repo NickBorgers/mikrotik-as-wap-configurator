@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.1.0] - Configuration Cleanup and Idempotency
+
+### Added
+- **Automatic cleanup**: Script now removes old virtual WiFi interfaces and datapaths before applying new configuration
+- **Full idempotency**: Device state matches config.yaml exactly - removed SSIDs are cleaned up automatically
+- **Ethernet management warning**: Clear documentation that management must be performed via Ethernet, not WiFi
+
+### Fixed
+- Old SSIDs no longer persist on device after removal from config.yaml
+- Virtual WiFi interfaces are properly cleaned up on each run
+- Datapaths are recreated fresh on each configuration apply
+
 ## [2.0.0] - Band-Based SSID Configuration
 
 ### Changed
