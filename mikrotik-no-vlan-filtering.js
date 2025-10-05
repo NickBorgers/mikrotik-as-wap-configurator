@@ -122,8 +122,32 @@ async function configureMikroTik(config = {}) {
 
     console.log('✓ ether2 already in bridge');
 
-    // Step 2: Process each SSID
-    console.log('\n=== Step 2: Configuring SSIDs ===');
+    // Step 2: Clean up old virtual WiFi interfaces and datapaths
+    console.log('\n=== Step 2: Cleaning Up Old Configurations ===');
+
+    try {
+      // Remove all virtual WiFi interfaces (master interfaces will remain)
+      const virtualInterfaces = await mt.exec('/interface/wifi print terse where master-interface');
+      if (virtualInterfaces && virtualInterfaces.trim()) {
+        await mt.exec('/interface/wifi remove [find master-interface]');
+        console.log('✓ Removed old virtual WiFi interfaces');
+      } else {
+        console.log('✓ No virtual interfaces to remove');
+      }
+    } catch (e) {
+      console.log('✓ No virtual interfaces to remove');
+    }
+
+    try {
+      // Remove all datapaths except the default ones
+      await mt.exec('/interface/wifi/datapath remove [find name~"wifi"]');
+      console.log('✓ Removed old WiFi datapaths');
+    } catch (e) {
+      console.log('✓ No datapaths to remove');
+    }
+
+    // Step 3: Process each SSID
+    console.log('\n=== Step 3: Configuring SSIDs ===');
 
     // Track which interfaces have been used for each band
     const bandUsage = {
@@ -230,8 +254,8 @@ async function configureMikroTik(config = {}) {
       }
     }
 
-    // Step 3: Ensure bridge VLAN filtering is DISABLED
-    console.log('\n=== Step 3: Ensuring Bridge VLAN Filtering is Disabled ===');
+    // Step 4: Ensure bridge VLAN filtering is DISABLED
+    console.log('\n=== Step 4: Ensuring Bridge VLAN Filtering is Disabled ===');
     await mt.exec('/interface bridge set bridge vlan-filtering=no');
     console.log('✓ VLAN filtering is DISABLED (safe for management)');
 

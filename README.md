@@ -60,8 +60,10 @@ See [DOCKER.md](DOCKER.md) for complete Docker documentation.
 
 **Prerequisites:**
 - Node.js (LTS version)
-- SSH access to MikroTik device
+- SSH access to MikroTik device via Ethernet
 - MikroTik RouterOS v7+ (with WiFi package)
+
+⚠️ **Important**: Management must be performed over Ethernet (ether1/ether2). Do not manage the device via WiFi as the script reconfigures all WiFi interfaces.
 
 ```bash
 npm install
@@ -263,6 +265,7 @@ Factory reset the device and reapply configuration:
 
 ## Security Considerations
 
+- **Management via Ethernet only**: This tool assumes device management is performed over Ethernet (ether1/ether2), not WiFi. WiFi configurations may be removed/reconfigured during script execution.
 - Change default passwords before deployment
 - Use strong WPA2 passphrases (12+ characters minimum)
 - Keep configuration files secure (contain credentials)
