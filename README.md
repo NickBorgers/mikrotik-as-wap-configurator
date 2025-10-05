@@ -9,33 +9,44 @@ YAML-based configuration management for MikroTik network devices with safe, repe
 
 ```mermaid
 graph TB
-    subgraph "Network Device"
+    subgraph "MikroTik Device"
         Bridge[Bridge Interface<br/>VLAN-Aware]
 
-        subgraph "Management VLAN - Untagged"
-            Ether1[ether1<br/>Management Access]
-            Ether2[ether2<br/>Management Access]
+        subgraph "Management - Untagged"
+            Ether1[ether1<br/>Management]
+            Ether2[ether2<br/>Management]
         end
 
-        subgraph "VLAN 100 - Tagged"
-            SSID1[SSID 1<br/>VLAN 100]
-            SSID2[SSID 2<br/>VLAN 100]
-            SSID3[SSID 3<br/>VLAN 100]
+        subgraph "WiFi SSIDs"
+            subgraph "VLAN 100 - MyNetwork"
+                SSID1_24[MyNetwork 2.4GHz<br/>VLAN 100]
+                SSID1_5[MyNetwork 5GHz<br/>VLAN 100]
+                SSID2_5[MyNetwork-5G<br/>VLAN 100]
+            end
+
+            subgraph "VLAN 200 - Guest"
+                SSID3_24[Guest-WiFi 2.4GHz<br/>VLAN 200]
+                SSID3_5[Guest-WiFi 5GHz<br/>VLAN 200]
+            end
         end
 
         Ether1 -->|Untagged| Bridge
         Ether2 -->|Untagged| Bridge
-        SSID1 -->|Tagged VLAN 100| Bridge
-        SSID2 -->|Tagged VLAN 100| Bridge
-        SSID3 -->|Tagged VLAN 100| Bridge
+        SSID1_24 -->|Tagged 100| Bridge
+        SSID1_5 -->|Tagged 100| Bridge
+        SSID2_5 -->|Tagged 100| Bridge
+        SSID3_24 -->|Tagged 200| Bridge
+        SSID3_5 -->|Tagged 200| Bridge
     end
 
-    Bridge --> MgmtNet[Management Network<br/>Untagged]
-    Bridge --> VLAN100Net[VLAN 100 Network<br/>Client Traffic]
+    Bridge --> MgmtNet[Management Network<br/>Untagged Access]
+    Bridge --> VLAN100Net[VLAN 100 Network<br/>Private Devices]
+    Bridge --> VLAN200Net[VLAN 200 Network<br/>Guest Network]
 
     style Bridge fill:#4a90e2,stroke:#333,stroke-width:3px,color:#fff
     style MgmtNet fill:#ff9500,stroke:#333,stroke-width:2px,color:#fff
     style VLAN100Net fill:#50c878,stroke:#333,stroke-width:2px,color:#fff
+    style VLAN200Net fill:#9b59b6,stroke:#333,stroke-width:2px,color:#fff
 ```
 
 ## Quick Start
