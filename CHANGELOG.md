@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.1.2] - CI/CD Fix
+
+### Fixed
+- Fix PAT reference in GitHub Actions pipeline
+
 ## [2.1.1] - Production Deployment
 
 ### Changed
