@@ -51,7 +51,7 @@ docker run nickborgers/mikrotik-as-wap-configurator example > config.yaml
 
 # Edit config.yaml with your settings, then apply
 docker run -v $(pwd)/config.yaml:/config/config.yaml \
-  nickborgers/mikrotik-as-wap-configurator
+  nickborgers/mikrotik-as-wap-configurator apply
 ```
 
 See [DOCKER.md](DOCKER.md) for complete Docker documentation.

@@ -198,7 +198,7 @@ async function configureMikroTik(config = {}) {
             try {
               await mt.exec(
                 `/interface/wifi add ` +
-                `master-interface=${masterInterface} ` +
+                `master-interface=[find default-name=${masterInterface}] ` +
                 `name="${wifiInterface}"`
               );
               console.log(`  ✓ Created virtual interface ${wifiInterface}`);
@@ -238,8 +238,9 @@ async function configureMikroTik(config = {}) {
           }
 
           // Configure WiFi interface with SSID, security, and datapath
+          const setTarget = isVirtual ? wifiInterface : `[find default-name=${masterInterface}]`;
           await mt.exec(
-            `/interface/wifi set ${wifiInterface} ` +
+            `/interface/wifi set ${setTarget} ` +
             `configuration.ssid="${ssid}" ` +
             `datapath="${datapathName}" ` +
             `security.authentication-types=wpa2-psk ` +
