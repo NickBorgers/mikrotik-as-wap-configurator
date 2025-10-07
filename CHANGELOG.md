@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.3.0] - Bug Fixes and Diagnostic Tools
+
+### Added
+- **Diagnostic tools folder** (`diag/`) with troubleshooting utilities
+- `diag/check-status.js` - View WiFi interfaces, datapaths, and bridge configuration
+- `diag/check-running.js` - Monitor runtime status and connected clients
+- `diag/README.md` - Documentation for diagnostic tools
+- Diagnostic scripts now included in Docker image
+
+### Fixed
+- **Bug #2**: `disabledInterfaces` not passed through in apply-config.js
+- **Bug #9**: Outdated default `managementInterfaces` (now defaults to `['ether1']`)
+- **Bug #7**: Improved error handling - no longer swallows real errors in cleanup
+- **Bug #8**: Fixed race condition - datapaths now removed before interfaces
+
+### Improved
+- Cleaner repository root - diagnostic scripts organized in dedicated folder
+- Better error visibility during configuration cleanup
+- More robust cleanup sequence prevents "in use" errors
+
 ## [2.2.0] - Interface Management and Topology Improvements
 
 ### Added
