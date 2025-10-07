@@ -21,6 +21,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY apply-config.js ./
 COPY mikrotik-no-vlan-filtering.js ./
 COPY config.example.yaml ./
+COPY diag ./diag
 
 # Create volume mount point for config
 VOLUME ["/config"]
