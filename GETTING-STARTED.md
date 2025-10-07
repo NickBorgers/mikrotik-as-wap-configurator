@@ -48,6 +48,8 @@ device:
 
 managementInterfaces:
   - ether1
+
+disabledInterfaces:
   - ether2
 
 ssids:
@@ -182,7 +184,7 @@ If you don't know the device IP:
    - After initial setup: password you set
 
 3. **Check network**:
-   - Connected via ether1 or ether2
+   - Connected via ether1 (trunk port)
    - Same subnet as device
 
 ### Configuration Not Working
@@ -223,7 +225,7 @@ ssids:
 
 1. **Keep config.yaml in version control** (but .gitignore passwords!)
 2. **Test on one device first** before deploying to many
-3. **Always ensure management interfaces are in config** (ether1, ether2)
+3. **Always ensure management interface is in config** (ether1)
 4. **Use strong passphrases** (12+ characters)
 5. **Document your VLAN assignments** in comments
 

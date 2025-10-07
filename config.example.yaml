@@ -5,9 +5,14 @@ device:
   username: admin
   password: admin
 
-# Management interfaces (untagged on VLAN 1)
+# Management interfaces
+# Typically ether1 is used as trunk port (untagged management + tagged VLANs)
 managementInterfaces:
   - ether1
+
+# Unused interfaces to disable for security
+# If you use ether2, remove it from this list and add to managementInterfaces
+disabledInterfaces:
   - ether2
 
 # SSID Configuration
