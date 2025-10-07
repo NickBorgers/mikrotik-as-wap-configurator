@@ -23,4 +23,3 @@ config.yaml
 
 # Scripts not needed in container
 configure-device.sh
-wait-for-device.js
