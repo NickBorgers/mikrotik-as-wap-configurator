@@ -1,5 +1,30 @@
 # Changelog
 
+## [2.2.0] - Interface Management and Topology Improvements
+
+### Added
+- **`disabledInterfaces` configuration option** - Disable unused Ethernet interfaces for security
+- Interfaces listed in `disabledInterfaces` are automatically disabled during configuration
+- Flexible configuration - enable/disable any interface based on your topology
+
+### Changed
+- **Single trunk port topology** - ether1 is now the default trunk port (untagged management + tagged VLANs)
+- Default `managementInterfaces` changed from `[ether1, ether2]` to `[ether1]`
+- ether2 disabled by default for security (can be re-enabled via config)
+- Updated network diagram to accurately show single trunk port design
+- Added upstream switch to Mermaid diagram for topology clarity
+
+### Improved
+- **Security**: Unused interfaces are now disabled by default
+- **Documentation**: Clarified VLAN isolation mechanism (WiFi datapaths + upstream switch)
+- **Topology**: Better alignment with common deployment scenarios
+- Summary output now shows disabled interfaces
+
+### Notes
+- **No breaking changes for most users**: If you use ether1 for management, no config changes needed
+- **If you use ether2**: Remove it from `disabledInterfaces` and add to `managementInterfaces`
+- **VLAN isolation**: Works via WiFi datapaths and upstream switch, not bridge VLAN filtering
+
 ## [2.1.3] - GitHub Container Registry Migration
 
 ### Changed
