@@ -137,8 +137,26 @@ async function configureMikroTik(config = {}) {
     // Step 2: Clean up old virtual WiFi interfaces and datapaths
     console.log('\n=== Step 2: Cleaning Up Old Configurations ===');
 
+    // First remove datapaths (to avoid "in use" errors when removing interfaces)
     try {
-      // Remove all virtual WiFi interfaces (master interfaces will remain)
+      const datapaths = await mt.exec('/interface/wifi/datapath print terse where name~"wifi"');
+      if (datapaths && datapaths.trim()) {
+        await mt.exec('/interface/wifi/datapath remove [find name~"wifi"]');
+        console.log('✓ Removed old WiFi datapaths');
+      } else {
+        console.log('✓ No datapaths to remove');
+      }
+    } catch (e) {
+      // Only ignore "no such item" errors
+      if (e.message.includes('no such') || e.message.includes('not found')) {
+        console.log('✓ No datapaths to remove');
+      } else {
+        console.log(`⚠️  Warning: Could not remove datapaths: ${e.message}`);
+      }
+    }
+
+    // Then remove virtual WiFi interfaces
+    try {
       const virtualInterfaces = await mt.exec('/interface/wifi print terse where master-interface');
       if (virtualInterfaces && virtualInterfaces.trim()) {
         await mt.exec('/interface/wifi remove [find master-interface]');
@@ -147,15 +165,12 @@ async function configureMikroTik(config = {}) {
         console.log('✓ No virtual interfaces to remove');
       }
     } catch (e) {
-      console.log('✓ No virtual interfaces to remove');
-    }
-
-    try {
-      // Remove all datapaths except the default ones
-      await mt.exec('/interface/wifi/datapath remove [find name~"wifi"]');
-      console.log('✓ Removed old WiFi datapaths');
-    } catch (e) {
-      console.log('✓ No datapaths to remove');
+      // Only ignore "no such item" errors
+      if (e.message.includes('no such') || e.message.includes('not found')) {
+        console.log('✓ No virtual interfaces to remove');
+      } else {
+        console.log(`⚠️  Warning: Could not remove virtual interfaces: ${e.message}`);
+      }
     }
 
     // Step 3: Process each SSID
