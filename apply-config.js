@@ -86,7 +86,8 @@ async function main() {
     host: targetIp || config.device.host,
     username: config.device.username,
     password: config.device.password,
-    managementInterfaces: config.managementInterfaces || ['ether1', 'ether2'],
+    managementInterfaces: config.managementInterfaces || ['ether1'],
+    disabledInterfaces: config.disabledInterfaces || [],
     securityProfile: config.security?.profile || 'wpa2-vlan100',
     passphrase: config.security?.passphrase || 'password',
     ssids: config.ssids
