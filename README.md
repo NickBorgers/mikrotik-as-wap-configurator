@@ -9,12 +9,11 @@ YAML-based configuration management for MikroTik network devices with safe, repe
 
 ```mermaid
 graph TB
-    subgraph "MikroTik Device"
-        Bridge[Bridge Interface<br/>VLAN-Aware]
+    subgraph "MikroTik WAP"
+        Bridge[Bridge Interface]
 
-        subgraph "Management - Untagged"
-            Ether1[ether1<br/>Management]
-            Ether2[ether2<br/>Management]
+        subgraph "Trunk Port"
+            Ether1[ether1<br/>Trunk to Upstream Switch<br/>Untagged: Management<br/>Tagged: VLANs 100, 200]
         end
 
         subgraph "WiFi SSIDs"
@@ -30,8 +29,7 @@ graph TB
             end
         end
 
-        Ether1 -->|Untagged| Bridge
-        Ether2 -->|Untagged| Bridge
+        Ether1 <-->|Bridged| Bridge
         SSID1_24 -->|Tagged 100| Bridge
         SSID1_5 -->|Tagged 100| Bridge
         SSID2_5 -->|Tagged 100| Bridge
@@ -39,11 +37,13 @@ graph TB
         SSID3_5 -->|Tagged 200| Bridge
     end
 
-    Bridge --> MgmtNet[Management Network<br/>Untagged Access]
-    Bridge --> VLAN100Net[VLAN 100 Network<br/>Private Devices]
-    Bridge --> VLAN200Net[VLAN 200 Network<br/>Guest Network]
+    Ether1 --> Switch[Upstream Switch<br/>Handles VLAN Routing]
+    Switch --> MgmtNet[Management VLAN<br/>Untagged on ether1]
+    Switch --> VLAN100Net[VLAN 100 Network<br/>Private Devices]
+    Switch --> VLAN200Net[VLAN 200 Network<br/>Guest Network]
 
     style Bridge fill:#4a90e2,stroke:#333,stroke-width:3px,color:#fff
+    style Switch fill:#e74c3c,stroke:#333,stroke-width:3px,color:#fff
     style MgmtNet fill:#ff9500,stroke:#333,stroke-width:2px,color:#fff
     style VLAN100Net fill:#50c878,stroke:#333,stroke-width:2px,color:#fff
     style VLAN200Net fill:#9b59b6,stroke:#333,stroke-width:2px,color:#fff
@@ -73,7 +73,7 @@ See [DOCKER.md](DOCKER.md) for complete Docker documentation.
 - SSH access to MikroTik device via Ethernet
 - MikroTik RouterOS v7+ (with WiFi package)
 
-⚠️ **Important**: Management must be performed over Ethernet (ether1/ether2). Do not manage the device via WiFi as the script reconfigures all WiFi interfaces.
+⚠️ **Important**: Management must be performed over Ethernet (ether1). Do not manage the device via WiFi as the script reconfigures all WiFi interfaces.
 
 ```bash
 npm install
@@ -97,6 +97,8 @@ device:
 
 managementInterfaces:
   - ether1
+
+disabledInterfaces:
   - ether2
 
 ssids:
@@ -229,7 +231,8 @@ done
 ## Network Configuration
 
 ### Management VLAN (Untagged)
-- **ether1, ether2**: Bridge members, untagged
+- **ether1**: Trunk port (untagged management + tagged VLANs 100, 200)
+- **ether2**: Disabled by default (can be enabled via config)
 - Provides administrative access to device
 - Bridge IP remains accessible
 
@@ -275,7 +278,7 @@ Factory reset the device and reapply configuration:
 
 ## Security Considerations
 
-- **Management via Ethernet only**: This tool assumes device management is performed over Ethernet (ether1/ether2), not WiFi. WiFi configurations may be removed/reconfigured during script execution.
+- **Management via Ethernet only**: This tool assumes device management is performed over Ethernet (ether1), not WiFi. WiFi configurations may be removed/reconfigured during script execution.
 - Change default passwords before deployment
 - Use strong WPA2 passphrases (12+ characters minimum)
 - Keep configuration files secure (contain credentials)

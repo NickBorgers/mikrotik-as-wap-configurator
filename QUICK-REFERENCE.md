@@ -67,6 +67,8 @@ device:
 
 managementInterfaces:
   - ether1
+
+disabledInterfaces:
   - ether2
 
 ssids:

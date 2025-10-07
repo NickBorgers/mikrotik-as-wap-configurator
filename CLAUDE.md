@@ -4,8 +4,9 @@
 
 - Create commits frequently to save progress
 - After every commit, review the repo for no longer needed content and prune as cleanup
-- Management is performed via Ethernet (ether1/ether2) - never WiFi
+- Management is performed via Ethernet (ether1 only) - never WiFi
 - Test device is accessible at 10.212.254.51 with credentials in config.yaml
+- ether2 is disabled by default for security (unused interface)
 
 ## Project Architecture
 
@@ -22,6 +23,12 @@
 - We tried enabling it 3+ times during development - always resulted in lockout requiring physical reset
 - WiFi VLAN isolation achieved via WiFi datapaths instead (safer approach)
 - Trade-off: Less secure than full VLAN filtering, but sufficient for WiFi AP use case
+- MikroTik acts as "dumb" VLAN-aware AP - tags traffic, upstream switch enforces policy
+
+**Single Trunk Port (ether1)**
+- ether1 serves dual purpose: management (untagged) + VLAN trunk (tagged 100, 200)
+- ether2 disabled by default for security (can be re-enabled via config if needed)
+- Upstream switch must handle both untagged management and tagged VLAN traffic on ether1
 
 **Virtual WiFi Interfaces**
 - MikroTik RouterOS v7 supports virtual WiFi interfaces on same radio

@@ -120,7 +120,19 @@ async function configureMikroTik(config = {}) {
       }
     }
 
-    console.log('✓ ether2 already in bridge');
+    // Disable unused interfaces for security
+    const disabledInterfaces = config.disabledInterfaces || [];
+    if (disabledInterfaces.length > 0) {
+      console.log('\n=== Disabling Unused Interfaces ===');
+      for (const iface of disabledInterfaces) {
+        try {
+          await mt.exec(`/interface ethernet set [find default-name=${iface}] disabled=yes`);
+          console.log(`✓ Disabled ${iface}`);
+        } catch (e) {
+          console.log(`⚠️  Could not disable ${iface}: ${e.message}`);
+        }
+      }
+    }
 
     // Step 2: Clean up old virtual WiFi interfaces and datapaths
     console.log('\n=== Step 2: Cleaning Up Old Configurations ===');
@@ -264,8 +276,13 @@ async function configureMikroTik(config = {}) {
     console.log('✓✓✓ Configuration Complete! ✓✓✓');
     console.log('========================================');
 
-    const mgmtInterfaces = config.managementInterfaces || ['ether1', 'ether2'];
+    const mgmtInterfaces = config.managementInterfaces || ['ether1'];
     console.log(`\nManagement Access: ${mgmtInterfaces.join(', ')}`);
+
+    if (disabledInterfaces.length > 0) {
+      console.log(`Disabled Interfaces: ${disabledInterfaces.join(', ')}`);
+    }
+
     console.log('\nConfigured SSIDs:');
 
     // Summary of what was configured
