@@ -138,3 +138,5 @@ Build Docker image locally:
 docker build -t mikrotik-config-test .
 docker run mikrotik-config-test help
 ```
+- When asked to cut a release use gh to create a release object on GitHub
+- When you add configurability always ensure it will be backed up correctly in addition to be something which can be applied

@@ -214,6 +214,12 @@ async function configureMikroTik(config = {}) {
         console.log(`  ✓ Country ${config24.country}`);
       }
 
+      // Channel Width
+      if (config24.width !== undefined) {
+        commands.push(`channel.width=${config24.width}`);
+        console.log(`  ✓ Channel Width ${config24.width}`);
+      }
+
       if (commands.length > 0) {
         try {
           await mt.exec(`/interface/wifi set [find default-name=wifi1] ${commands.join(' ')}`);
@@ -261,6 +267,12 @@ async function configureMikroTik(config = {}) {
       if (config5.country) {
         commands.push(`configuration.country="${config5.country}"`);
         console.log(`  ✓ Country ${config5.country}`);
+      }
+
+      // Channel Width
+      if (config5.width !== undefined) {
+        commands.push(`channel.width=${config5.width}`);
+        console.log(`  ✓ Channel Width ${config5.width}`);
       }
 
       if (commands.length > 0) {
@@ -573,6 +585,7 @@ async function backupMikroTikConfig(credentials = {}) {
       const channelFreqMatch24 = wifi1Output.match(/channel\.frequency=(\d+)/);
       const txPowerMatch24 = wifi1Output.match(/(?:configuration\.)?tx-power=(\d+)/);
       const countryMatch24 = wifi1Output.match(/(?:configuration\.)?country="?([^"\s]+)"?/);
+      const widthMatch24 = wifi1Output.match(/(?:channel\.)?width=([^\s]+)/);
 
       if (channelFreqMatch24) {
         const freq = parseInt(channelFreqMatch24[1]);
@@ -601,11 +614,17 @@ async function backupMikroTikConfig(credentials = {}) {
         console.log(`✓ 2.4GHz Country: ${countryMatch24[1]}`);
       }
 
+      if (widthMatch24) {
+        config.wifi['2.4GHz'].width = widthMatch24[1];
+        console.log(`✓ 2.4GHz Width: ${widthMatch24[1]}`);
+      }
+
       // Read 5GHz settings (wifi2)
       const wifi2Output = await mt.exec('/interface wifi print detail without-paging where default-name=wifi2');
       const channelFreqMatch5 = wifi2Output.match(/channel\.frequency=(\d+)/);
       const txPowerMatch5 = wifi2Output.match(/(?:configuration\.)?tx-power=(\d+)/);
       const countryMatch5 = wifi2Output.match(/(?:configuration\.)?country="?([^"\s]+)"?/);
+      const widthMatch5 = wifi2Output.match(/(?:channel\.)?width=([^\s]+)/);
 
       if (channelFreqMatch5) {
         const freq = parseInt(channelFreqMatch5[1]);
@@ -637,6 +656,11 @@ async function backupMikroTikConfig(credentials = {}) {
         console.log(`✓ 5GHz Country: ${countryMatch5[1]}`);
       }
 
+      if (widthMatch5) {
+        config.wifi['5GHz'].width = widthMatch5[1];
+        console.log(`✓ 5GHz Width: ${widthMatch5[1]}`);
+      }
+
       // Clean up empty wifi band configs
       if (Object.keys(config.wifi['2.4GHz']).length === 0) {
         delete config.wifi['2.4GHz'];
@@ -644,11 +668,6 @@ async function backupMikroTikConfig(credentials = {}) {
       if (Object.keys(config.wifi['5GHz']).length === 0) {
         delete config.wifi['5GHz'];
       }
-
-      // Note: Roaming settings (802.11k/v/r) are complex to extract from RouterOS v7
-      // and may require additional CLI commands. For now, we'll leave this section empty.
-      // Users can manually add roaming config if needed.
-      delete config.wifi.roaming;
 
       if (Object.keys(config.wifi).length === 0) {
         delete config.wifi;
@@ -780,6 +799,36 @@ async function backupMikroTikConfig(credentials = {}) {
         console.log(`✓ SSID: ${ssid.ssid}`);
         console.log(`  Bands: ${ssid.bands.join(', ')}`);
         console.log(`  VLAN: ${ssid.vlan}`);
+      }
+
+      // Step 7: Detect roaming settings (802.11r Fast Transition)
+      console.log('\n=== Detecting Roaming Settings ===');
+
+      // Check if any WiFi interface has FT enabled
+      let ftEnabled = false;
+      for (const iface of interfaces) {
+        if (iface.raw && iface.raw.match(/\.ft=yes/)) {
+          ftEnabled = true;
+          break;
+        }
+      }
+
+      if (ftEnabled) {
+        // Initialize wifi object if it doesn't exist
+        if (!config.wifi) {
+          config.wifi = {};
+        }
+
+        // Add roaming configuration
+        config.wifi.roaming = {
+          enabled: true,
+          neighborReport: true,
+          bssTransition: true,
+          fastTransition: true
+        };
+        console.log('✓ Fast Transition (802.11r) detected - adding roaming configuration');
+      } else {
+        console.log('  No Fast Transition detected');
       }
 
     } catch (e) {

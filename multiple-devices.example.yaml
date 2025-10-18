@@ -27,10 +27,12 @@ devices:
         channel: 1        # Non-overlapping channel 1
         txPower: 15       # Adjust based on coverage area
         country: united_states
+        width: 20mhz      # 20MHz only to avoid interference
       5GHz:
         channel: 36       # Non-overlapping channel 36
         txPower: 18
         country: united_states
+        width: 20/40/80mhz  # Wider channels for better throughput
       roaming:
         enabled: yes
         neighborReport: yes   # 802.11k
@@ -75,10 +77,12 @@ devices:
         channel: 6        # Non-overlapping channel 6
         txPower: 15
         country: united_states
+        width: 20mhz      # 20MHz only to avoid interference
       5GHz:
         channel: 52       # Non-overlapping channel 52
         txPower: 18
         country: united_states
+        width: 20/40/80mhz  # Wider channels for better throughput
       roaming:
         enabled: yes
         neighborReport: yes
@@ -120,10 +124,12 @@ devices:
         channel: 11       # Non-overlapping channel 11
         txPower: 15
         country: united_states
+        width: 20mhz      # 20MHz only to avoid interference
       5GHz:
         channel: 149      # Non-overlapping channel 149
         txPower: 18
         country: united_states
+        width: 20/40/80mhz  # Wider channels for better throughput
       roaming:
         enabled: yes
         neighborReport: yes

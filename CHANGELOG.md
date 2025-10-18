@@ -1,5 +1,60 @@
 # Changelog
 
+## [2.6.0] - 2025-10-18 - Channel Width Control and Enhanced Backup
+
+### Added - Channel Width Configuration
+- **Channel width control** - Configure 2.4GHz and 5GHz channel widths via YAML
+- **2.4GHz optimization** - Set to 20MHz to avoid interference in multi-AP deployments
+- **5GHz flexibility** - Support for 20/40/80MHz or 20/40/80/160MHz widths
+- Channel width settings apply during configuration and preserved in backups
+- Automatic width detection and backup from devices
+
+### Enhanced - Roaming Settings Backup
+- **Automatic roaming detection** - Backup now detects Fast Transition (802.11r) configuration
+- **Complete roaming backup** - All roaming settings (802.11k/v/r) preserved during backup
+- Backup intelligently detects FT-enabled WiFi interfaces
+- Roaming configuration automatically added to backup YAML when detected
+
+### New YAML Schema Extensions
+```yaml
+wifi:
+  2.4GHz:
+    channel: 1
+    width: 20mhz            # NEW: Enforce 20MHz for non-overlapping channels
+  5GHz:
+    channel: 36
+    width: 20/40/80mhz      # NEW: Wider channels for better throughput
+  roaming:                  # Now backed up automatically
+    enabled: yes
+    neighborReport: yes
+    bssTransition: yes
+    fastTransition: yes
+```
+
+### Enhanced - Backup Display
+- Backup summary now shows channel width settings
+- Roaming status displayed in backup output
+- Multi-device backup shows roaming as a feature when detected
+- Clearer indication of WiFi optimization settings
+
+### Benefits
+- **Reduced 2.4GHz interference** - 20MHz channel width prevents overlap
+- **Optimal 5GHz performance** - Wider channels improve throughput
+- **Complete backup fidelity** - All WiFi settings now preserved
+- **Easier multi-AP management** - Consistent width settings across devices
+
+### Use Cases
+- **Dense WiFi environments** - 20MHz on 2.4GHz minimizes interference
+- **High-performance 5GHz** - 80MHz or 160MHz widths for maximum speed
+- **Configuration migration** - Full backup/restore including all WiFi settings
+- **Multi-AP consistency** - Ensure all APs use same channel width policy
+
+### Technical Details
+- Channel width applies via `channel.width` property in RouterOS v7
+- Backup reads width from WiFi interface detail output
+- Roaming detection checks for `.ft=yes` flag in WiFi interface configuration
+- Width settings validated: `20mhz`, `20/40mhz`, `20/40/80mhz`, `20/40/80/160mhz`
+
 ## [2.5.0] - 2025-10-18 - WiFi Optimization and Multi-AP Management
 
 ### Added - WiFi Channel & Power Configuration

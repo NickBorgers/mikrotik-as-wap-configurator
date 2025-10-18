@@ -25,6 +25,7 @@ wifi:
     # frequency: 2412       # Or specify frequency in MHz directly
     txPower: 15             # TX power in dBm (adjust based on coverage needs)
     country: united_states  # Regulatory domain
+    width: 20mhz            # Channel width (20mhz recommended for 2.4GHz to avoid interference)
 
   # 5GHz band settings
   5GHz:
@@ -32,6 +33,7 @@ wifi:
     # frequency: 5180       # Or specify frequency in MHz directly
     txPower: 18             # TX power in dBm
     country: united_states  # Regulatory domain
+    width: 20/40/80mhz      # Channel width (20/40/80mhz for better throughput, or 20/40/80/160mhz if supported)
 
   # Fast Roaming Settings (802.11k/v/r)
   # Enables seamless handoff between multiple APs
