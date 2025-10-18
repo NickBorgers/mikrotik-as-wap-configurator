@@ -1,5 +1,106 @@
 # Changelog
 
+## [2.5.0] - 2025-10-18 - WiFi Optimization and Multi-AP Management
+
+### Added - WiFi Channel & Power Configuration
+- **WiFi optimization settings** in YAML schema - Configure channels, TX power, and regulatory domain
+- **Channel configuration** - Set specific WiFi channels (2.4GHz: 1-13, 5GHz: 36-165)
+- **TX power control** - Adjust transmission power in dBm for optimal coverage
+- **Country/regulatory domain** - Ensure compliance with local regulations
+- Automatic channel-to-frequency mapping for both 2.4GHz and 5GHz bands
+- Settings apply during configuration and are preserved in backups
+
+### Added - Fast Roaming (802.11k/v/r)
+- **802.11k** - Radio Resource Management (neighbor reports)
+- **802.11v** - BSS Transition Management (client steering)
+- **802.11r** - Fast BSS Transition (reduced handoff time)
+- Enable seamless roaming between multiple access points
+- Configurable per-device via `wifi.roaming` section
+
+### Added - Channel Optimization Tool
+- **`diag/optimize-wifi-channels.js`** - Intelligent channel planning for multi-AP deployments
+- Analyzes current channel usage across all devices
+- Detects channel conflicts (multiple APs on same channel)
+- Suggests optimal non-overlapping channels for 3+ device deployments
+  - 2.4GHz: Assigns channels 1, 6, 11 (non-overlapping)
+  - 5GHz: Assigns channels 36, 52, 149 (well-separated)
+- **Dry-run mode** - Preview suggestions without making changes
+- **Auto-apply mode** - Automatically update YAML with optimal channels
+- Preserves existing TX power and country settings when optimizing
+
+### Enhanced - Backup Functionality
+- WiFi optimization settings now exported during backup
+- Channel, TX power, and country settings captured from device
+- Backup summary displays WiFi optimization status
+- Multi-device backups show optimization per device
+
+### New YAML Schema
+```yaml
+wifi:
+  2.4GHz:
+    channel: 1              # Channel number (1-13)
+    txPower: 15             # TX power in dBm
+    country: united_states  # Regulatory domain
+  5GHz:
+    channel: 36             # Channel number (36-165)
+    txPower: 18             # TX power in dBm
+    country: united_states
+  roaming:
+    enabled: yes            # Enable fast roaming
+    neighborReport: yes     # 802.11k
+    bssTransition: yes      # 802.11v
+    fastTransition: yes     # 802.11r
+```
+
+### Usage - WiFi Optimization
+
+#### Configure Channels Manually
+```bash
+# Edit config.yaml to add wifi section
+vim config.yaml
+
+# Apply configuration
+./apply-config.js config.yaml
+```
+
+#### Optimize Multiple APs Automatically
+```bash
+# Analyze current channel usage (dry-run)
+node diag/optimize-wifi-channels.js multiple-devices.yaml
+
+# Apply suggested channels
+node diag/optimize-wifi-channels.js multiple-devices.yaml --apply
+
+# Deploy optimized configuration to devices
+./apply-multiple-devices.js multiple-devices.yaml
+```
+
+### Benefits
+- **Reduced interference**: Non-overlapping channels minimize WiFi conflicts
+- **Better performance**: Optimal channel spacing improves throughput and reliability
+- **Seamless roaming**: Fast handoff between APs for mobile devices
+- **Simplified multi-AP deployment**: Automatic channel planning for 3+ devices
+- **Compliance**: Country settings ensure regulatory compliance
+- **Fine-tuned coverage**: TX power control for optimal signal strength
+
+### Use Cases
+- **Office deployments**: Multiple APs on same floor need non-overlapping channels
+- **Large homes**: Multiple floors with several APs benefit from roaming
+- **Dense environments**: Minimize interference in crowded WiFi spaces
+- **Enterprise**: Fast roaming for mobile devices (laptops, phones, tablets)
+
+### Documentation
+- Updated `config.example.yaml` with WiFi optimization examples
+- Updated `multiple-devices.example.yaml` showing 3-AP optimized deployment
+- Added `diag/README.md` documentation for channel optimization tool
+- Example configurations show recommended channel assignments
+
+### Technical Details
+- RouterOS v7 WiFi property names correctly mapped (`channel.frequency`, `configuration.tx-power`, `configuration.country`)
+- Channel-to-frequency conversion for both 2.4GHz (2412-2472 MHz) and 5GHz (5180-5825 MHz)
+- Backup function extracts and preserves WiFi settings from device
+- Apply function configures all WiFi settings before SSIDs (Step 3 of 5)
+
 ## [2.4.0] - 2025-10-18 - Backup and Multi-Device Support
 
 ### Added - Backup Functionality

@@ -60,6 +60,39 @@ Waits for device to come online after reboot.
 node diag/wait-for-device.js <password>
 ```
 
+### optimize-wifi-channels.js
+Analyzes multiple MikroTik devices and suggests optimal WiFi channel configurations to minimize interference between physically close access points.
+
+```bash
+node diag/optimize-wifi-channels.js <devices-file.yaml>
+node diag/optimize-wifi-channels.js <devices-file.yaml> --apply
+node diag/optimize-wifi-channels.js <devices-file.yaml> --apply --output optimized.yaml
+```
+
+**Example:**
+```bash
+# Analyze current channel usage (dry-run)
+node diag/optimize-wifi-channels.js multiple-devices.yaml
+
+# Apply suggestions and update file in-place
+node diag/optimize-wifi-channels.js multiple-devices.yaml --apply
+
+# Apply suggestions and save to different file
+node diag/optimize-wifi-channels.js multiple-devices.yaml --apply --output optimized.yaml
+```
+
+**Output:**
+- Current channel configuration for each device
+- Channel conflict detection (multiple devices on same channel)
+- Suggested optimal channel assignments
+- For 3 devices: 2.4GHz uses channels 1/6/11, 5GHz uses 36/52/149
+
+**Use Cases:**
+- Multiple APs in close proximity (same building, same floor)
+- Channel interference causing poor WiFi performance
+- Setting up new multi-AP deployment
+- Optimizing existing deployment
+
 ## Docker Usage
 
 These scripts are included in the Docker image:

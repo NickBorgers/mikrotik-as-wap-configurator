@@ -5,6 +5,11 @@
 #   2. Run: ./backup-multiple-devices.js multiple-devices.yaml
 #   3. Edit the generated configs (replace UNKNOWN passphrases if any)
 #   4. Run: ./apply-multiple-devices.js multiple-devices.yaml
+#
+# For multiple physically close devices:
+#   - Use non-overlapping channels (2.4GHz: 1/6/11, 5GHz: 36/52/149)
+#   - Enable fast roaming for seamless handoff
+#   - Use ./diag/optimize-wifi-channels.js to analyze and suggest optimal channels
 
 devices:
   # First Access Point
@@ -16,6 +21,21 @@ devices:
       - ether1
     disabledInterfaces:
       - ether2
+    # WiFi optimization for first AP
+    wifi:
+      2.4GHz:
+        channel: 1        # Non-overlapping channel 1
+        txPower: 15       # Adjust based on coverage area
+        country: united_states
+      5GHz:
+        channel: 36       # Non-overlapping channel 36
+        txPower: 18
+        country: united_states
+      roaming:
+        enabled: yes
+        neighborReport: yes   # 802.11k
+        bssTransition: yes    # 802.11v
+        fastTransition: yes   # 802.11r
     ssids:
       # Primary network on both bands
       - ssid: MyNetwork
@@ -40,7 +60,7 @@ devices:
           - 2.4GHz
           - 5GHz
 
-  # Second Access Point (same configuration)
+  # Second Access Point (same SSIDs, different channels)
   - device:
       host: 192.168.88.2
       username: admin
@@ -49,6 +69,21 @@ devices:
       - ether1
     disabledInterfaces:
       - ether2
+    # WiFi optimization for second AP - non-overlapping with first AP
+    wifi:
+      2.4GHz:
+        channel: 6        # Non-overlapping channel 6
+        txPower: 15
+        country: united_states
+      5GHz:
+        channel: 52       # Non-overlapping channel 52
+        txPower: 18
+        country: united_states
+      roaming:
+        enabled: yes
+        neighborReport: yes
+        bssTransition: yes
+        fastTransition: yes
     ssids:
       - ssid: MyNetwork
         passphrase: secure-password-here
@@ -70,7 +105,7 @@ devices:
           - 2.4GHz
           - 5GHz
 
-  # Third Access Point (different configuration)
+  # Third Access Point (different SSIDs, third channel set)
   - device:
       host: 192.168.88.3
       username: admin
@@ -79,6 +114,21 @@ devices:
       - ether1
       - ether2  # This AP uses both ports
     disabledInterfaces: []  # No disabled interfaces
+    # WiFi optimization for third AP - completes non-overlapping set
+    wifi:
+      2.4GHz:
+        channel: 11       # Non-overlapping channel 11
+        txPower: 15
+        country: united_states
+      5GHz:
+        channel: 149      # Non-overlapping channel 149
+        txPower: 18
+        country: united_states
+      roaming:
+        enabled: yes
+        neighborReport: yes
+        bssTransition: yes
+        fastTransition: yes
     ssids:
       # 5GHz only for high-performance devices
       - ssid: MyNetwork-5G
