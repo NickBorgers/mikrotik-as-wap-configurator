@@ -91,6 +91,7 @@ async function main() {
     password: config.device.password,
     managementInterfaces: config.managementInterfaces || ['ether1'],
     disabledInterfaces: config.disabledInterfaces || [],
+    wifi: config.wifi,  // WiFi optimization settings (channel, power, roaming)
     securityProfile: config.security?.profile || 'wpa2-vlan100',
     passphrase: config.security?.passphrase || 'password',
     ssids: config.ssids

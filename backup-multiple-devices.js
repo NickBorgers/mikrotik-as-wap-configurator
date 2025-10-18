@@ -119,6 +119,9 @@ async function main() {
       console.log(`  SSIDs: ${config.ssids.length}`);
       console.log(`  Management interfaces: ${config.managementInterfaces.join(', ')}`);
       console.log(`  Disabled interfaces: ${config.disabledInterfaces.length > 0 ? config.disabledInterfaces.join(', ') : 'none'}`);
+      if (config.wifi) {
+        console.log(`  WiFi optimization: configured (${Object.keys(config.wifi).join(', ')})`);
+      }
 
     } catch (error) {
       console.error(`\n✗ Failed to backup ${host}: ${error.message}`);

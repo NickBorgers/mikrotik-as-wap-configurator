@@ -60,6 +60,19 @@ async function main() {
     console.log('\nConfiguration summary:');
     console.log(`  Management interfaces: ${config.managementInterfaces.join(', ')}`);
     console.log(`  Disabled interfaces: ${config.disabledInterfaces.length > 0 ? config.disabledInterfaces.join(', ') : 'none'}`);
+
+    if (config.wifi) {
+      console.log(`  WiFi optimization: enabled`);
+      if (config.wifi['2.4GHz']) {
+        const c = config.wifi['2.4GHz'];
+        console.log(`    2.4GHz: ${c.channel ? `ch ${c.channel}` : ''} ${c.txPower ? `${c.txPower}dBm` : ''} ${c.country ? c.country : ''}`.trim());
+      }
+      if (config.wifi['5GHz']) {
+        const c = config.wifi['5GHz'];
+        console.log(`    5GHz: ${c.channel ? `ch ${c.channel}` : ''} ${c.txPower ? `${c.txPower}dBm` : ''} ${c.country ? c.country : ''}`.trim());
+      }
+    }
+
     console.log(`  SSIDs configured: ${config.ssids.length}`);
 
     if (config.ssids.length > 0) {

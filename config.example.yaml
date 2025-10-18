@@ -15,6 +15,32 @@ managementInterfaces:
 disabledInterfaces:
   - ether2
 
+# WiFi Optimization Settings (Optional)
+# Configure channel, power, and roaming settings for optimal performance
+# Especially useful when multiple APs are deployed in close proximity
+wifi:
+  # 2.4GHz band settings
+  2.4GHz:
+    channel: 1              # Channel number (1-13, use 1/6/11 for non-overlapping)
+    # frequency: 2412       # Or specify frequency in MHz directly
+    txPower: 15             # TX power in dBm (adjust based on coverage needs)
+    country: united_states  # Regulatory domain
+
+  # 5GHz band settings
+  5GHz:
+    channel: 36             # Channel number (36/52/149 recommended for non-overlapping)
+    # frequency: 5180       # Or specify frequency in MHz directly
+    txPower: 18             # TX power in dBm
+    country: united_states  # Regulatory domain
+
+  # Fast Roaming Settings (802.11k/v/r)
+  # Enables seamless handoff between multiple APs
+  roaming:
+    enabled: yes            # Enable fast roaming features
+    neighborReport: yes     # 802.11k - Radio Resource Management
+    bssTransition: yes      # 802.11v - BSS Transition Management
+    fastTransition: yes     # 802.11r - Fast BSS Transition
+
 # SSID Configuration
 # Each SSID can be broadcast on 2.4GHz, 5GHz, or both bands
 ssids:

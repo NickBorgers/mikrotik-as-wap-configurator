@@ -125,6 +125,7 @@ async function main() {
         password: deviceConfig.device.password,
         managementInterfaces: deviceConfig.managementInterfaces || ['ether1'],
         disabledInterfaces: deviceConfig.disabledInterfaces || [],
+        wifi: deviceConfig.wifi,  // WiFi optimization settings
         ssids: deviceConfig.ssids
       };
 
@@ -150,6 +151,7 @@ async function main() {
         password: deviceConfig.device.password,
         managementInterfaces: deviceConfig.managementInterfaces || ['ether1'],
         disabledInterfaces: deviceConfig.disabledInterfaces || [],
+        wifi: deviceConfig.wifi,  // WiFi optimization settings
         ssids: deviceConfig.ssids
       };
 
