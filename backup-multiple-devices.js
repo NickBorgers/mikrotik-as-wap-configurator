@@ -120,7 +120,11 @@ async function main() {
       console.log(`  Management interfaces: ${config.managementInterfaces.join(', ')}`);
       console.log(`  Disabled interfaces: ${config.disabledInterfaces.length > 0 ? config.disabledInterfaces.join(', ') : 'none'}`);
       if (config.wifi) {
-        console.log(`  WiFi optimization: configured (${Object.keys(config.wifi).join(', ')})`);
+        const features = [];
+        if (config.wifi['2.4GHz']) features.push('2.4GHz');
+        if (config.wifi['5GHz']) features.push('5GHz');
+        if (config.wifi.roaming && config.wifi.roaming.fastTransition) features.push('roaming');
+        console.log(`  WiFi optimization: configured (${features.join(', ')})`);
       }
 
     } catch (error) {

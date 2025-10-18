@@ -65,11 +65,14 @@ async function main() {
       console.log(`  WiFi optimization: enabled`);
       if (config.wifi['2.4GHz']) {
         const c = config.wifi['2.4GHz'];
-        console.log(`    2.4GHz: ${c.channel ? `ch ${c.channel}` : ''} ${c.txPower ? `${c.txPower}dBm` : ''} ${c.country ? c.country : ''}`.trim());
+        console.log(`    2.4GHz: ${c.channel ? `ch ${c.channel}` : ''} ${c.width ? c.width : ''} ${c.txPower ? `${c.txPower}dBm` : ''} ${c.country ? c.country : ''}`.trim());
       }
       if (config.wifi['5GHz']) {
         const c = config.wifi['5GHz'];
-        console.log(`    5GHz: ${c.channel ? `ch ${c.channel}` : ''} ${c.txPower ? `${c.txPower}dBm` : ''} ${c.country ? c.country : ''}`.trim());
+        console.log(`    5GHz: ${c.channel ? `ch ${c.channel}` : ''} ${c.width ? c.width : ''} ${c.txPower ? `${c.txPower}dBm` : ''} ${c.country ? c.country : ''}`.trim());
+      }
+      if (config.wifi.roaming && config.wifi.roaming.fastTransition) {
+        console.log(`    Fast roaming: enabled (802.11r)`);
       }
     }
 
