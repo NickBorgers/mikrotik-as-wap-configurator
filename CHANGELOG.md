@@ -1,5 +1,82 @@
 # Changelog
 
+## [2.4.0] - 2025-10-18 - Backup and Multi-Device Support
+
+### Added - Backup Functionality
+- **Backup tool** (`backup-config.js`) - Export current MikroTik configuration to config.yaml format
+- `backupMikroTikConfig()` function in mikrotik-no-vlan-filtering.js library
+- Reads current device state including:
+  - WiFi SSIDs, passphrases, VLANs, and band assignments
+  - WiFi datapath configurations
+  - Bridge port assignments (management interfaces)
+  - Disabled interface status
+- Generates valid config.yaml compatible with apply-config.js
+- NPM script: `npm run backup`
+- Binary: `mikrotik-backup` (when installed globally)
+
+### Added - Multi-Device Support
+- **Multi-device backup tool** (`backup-multiple-devices.js`) - Backup multiple devices to single YAML file
+- **Multi-device apply tool** (`apply-multiple-devices.js`) - Configure multiple devices from single YAML file
+- Support for sequential (default) and parallel (--parallel) execution modes
+- Comprehensive error handling and progress reporting for multi-device operations
+- `multiple-devices.yaml` - Example multi-device configuration file
+- NPM scripts: `npm run backup-multiple`, `npm run apply-multiple`
+- Binaries: `mikrotik-backup-multiple`, `mikrotik-apply-multiple`
+
+### Usage
+
+#### Single Device Backup
+```bash
+# Backup to default file (config-backup.yaml)
+./backup-config.js 192.168.88.1 admin password
+
+# Backup to specific file
+./backup-config.js 192.168.88.1 admin password my-backup.yaml
+
+# Or via npm
+npm run backup -- 192.168.88.1 admin password config.yaml
+```
+
+#### Multi-Device Operations
+```bash
+# Backup all devices (updates file in-place by default)
+./backup-multiple-devices.js multiple-devices.yaml
+
+# Or save to different file
+./backup-multiple-devices.js multiple-devices.yaml --output backup.yaml
+
+# Apply configuration to all devices (sequential)
+./apply-multiple-devices.js multiple-devices.yaml
+
+# Apply configuration in parallel (faster)
+./apply-multiple-devices.js multiple-devices.yaml --parallel
+```
+
+**Passphrase Handling:**
+- Most WiFi passphrases are successfully extracted from devices during backup
+- Some passphrases may appear as `UNKNOWN` if MikroTik doesn't expose them via SSH (depends on RouterOS version/settings)
+- You **must** manually edit any `UNKNOWN` passphrases before applying the configuration
+- Attempting to apply a configuration with `UNKNOWN` passphrases will fail validation with a clear error message
+- This prevents accidentally setting weak or placeholder passwords on production devices
+
+### Fixed
+- **Backup parsing bug - SSIDs**: Now correctly captures SSIDs from master WiFi interfaces (was only capturing virtual interfaces)
+  - Uses regex to match both full format (`configuration.ssid=`) and shorthand (`.ssid=`) used by master interfaces
+  - Passphrases are now extracted correctly from most devices
+- **Backup parsing bug - Disabled interfaces**: Now correctly detects disabled ethernet interfaces by parsing the "X" flag
+  - Previous code looked for `disabled=yes` in output, but MikroTik shows disabled status as "X" flag
+  - Disabled interfaces are properly excluded from managementInterfaces list
+  - Fixed for both single-device and multi-device backups
+
+### Benefits
+- **Document existing configurations**: Export config from running devices
+- **Migration**: Easy transfer of config between devices
+- **Version control**: Generate config.yaml for devices configured manually
+- **Audit**: Review current device state in YAML format
+- **Fleet management**: Configure multiple APs with one command
+- **Consistency**: Ensure all devices have identical or custom configurations
+- **Efficiency**: Parallel execution for faster deployment
+
 ## [2.3.0] - Bug Fixes and Diagnostic Tools
 
 ### Added

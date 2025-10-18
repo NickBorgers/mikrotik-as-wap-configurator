@@ -1,0 +1,96 @@
+# MikroTik Multi-Device Configuration Example
+#
+# Workflow:
+#   1. Create this file with just device credentials
+#   2. Run: ./backup-multiple-devices.js multiple-devices.yaml
+#   3. Edit the generated configs (replace UNKNOWN passphrases if any)
+#   4. Run: ./apply-multiple-devices.js multiple-devices.yaml
+
+devices:
+  # First Access Point
+  - device:
+      host: 192.168.88.1
+      username: admin
+      password: admin
+    managementInterfaces:
+      - ether1
+    disabledInterfaces:
+      - ether2
+    ssids:
+      # Primary network on both bands
+      - ssid: MyNetwork
+        passphrase: secure-password-here
+        vlan: 100
+        bands:
+          - 2.4GHz
+          - 5GHz
+
+      # IoT devices on 2.4GHz only
+      - ssid: IoT-Devices
+        passphrase: iot-password-here
+        vlan: 100
+        bands:
+          - 2.4GHz
+
+      # Guest network on separate VLAN
+      - ssid: Guest-WiFi
+        passphrase: guest-password-here
+        vlan: 200
+        bands:
+          - 2.4GHz
+          - 5GHz
+
+  # Second Access Point (same configuration)
+  - device:
+      host: 192.168.88.2
+      username: admin
+      password: admin
+    managementInterfaces:
+      - ether1
+    disabledInterfaces:
+      - ether2
+    ssids:
+      - ssid: MyNetwork
+        passphrase: secure-password-here
+        vlan: 100
+        bands:
+          - 2.4GHz
+          - 5GHz
+
+      - ssid: IoT-Devices
+        passphrase: iot-password-here
+        vlan: 100
+        bands:
+          - 2.4GHz
+
+      - ssid: Guest-WiFi
+        passphrase: guest-password-here
+        vlan: 200
+        bands:
+          - 2.4GHz
+          - 5GHz
+
+  # Third Access Point (different configuration)
+  - device:
+      host: 192.168.88.3
+      username: admin
+      password: admin
+    managementInterfaces:
+      - ether1
+      - ether2  # This AP uses both ports
+    disabledInterfaces: []  # No disabled interfaces
+    ssids:
+      # 5GHz only for high-performance devices
+      - ssid: MyNetwork-5G
+        passphrase: secure-password-here
+        vlan: 100
+        bands:
+          - 5GHz
+
+      # Corporate network
+      - ssid: Corporate
+        passphrase: corporate-password
+        vlan: 50
+        bands:
+          - 2.4GHz
+          - 5GHz
