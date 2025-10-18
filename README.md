@@ -79,12 +79,33 @@ See [DOCKER.md](DOCKER.md) for complete Docker documentation.
 npm install
 ```
 
+### Backup Existing Configuration
+
+If you have an already-configured MikroTik device, you can export its current configuration:
+
+```bash
+./backup-config.js 192.168.88.1 admin your-password config.yaml
+```
+
+This will connect to the device and generate a `config.yaml` file from the current configuration, including:
+- WiFi SSIDs, VLANs, and bands
+- Bridge port assignments
+- Disabled interfaces
+
+⚠️ **Important:** Some passphrases may be marked as `UNKNOWN` if MikroTik does not expose them via SSH (depends on RouterOS version and security settings). You must manually edit the file and replace any `UNKNOWN` passphrases with actual values before applying the configuration.
+
 ### Configure a Device (Fresh or Existing)
 
 1. Create your configuration file:
 
 ```bash
 cp config.example.yaml my-device.yaml
+```
+
+Or backup an existing device:
+
+```bash
+./backup-config.js 192.168.88.1 admin password my-device.yaml
 ```
 
 2. Edit the configuration:
@@ -132,6 +153,74 @@ ssids:
 - ✅ Changing passwords
 
 The script is **idempotent** and safe to run multiple times.
+
+## Multi-Device Management
+
+Configure multiple devices at once using a single YAML file.
+
+### Quick Start - Multi-Device
+
+```bash
+# 1. Create file with device credentials
+cat > multiple-devices.yaml <<EOF
+devices:
+  - host: 192.168.88.1
+    username: admin
+    password: password
+  - host: 192.168.88.2
+    username: admin
+    password: password
+EOF
+
+# 2. Backup all devices (updates file in-place with full configs)
+./backup-multiple-devices.js multiple-devices.yaml
+
+# 3. Review and edit configs if needed (check for UNKNOWN passphrases)
+nano multiple-devices.yaml
+
+# 4. Apply to all devices
+./apply-multiple-devices.js multiple-devices.yaml
+
+# Or apply in parallel (faster)
+./apply-multiple-devices.js multiple-devices.yaml --parallel
+```
+
+The backup tool enriches your simple device list with full configurations from the devices.
+
+### 3. Multi-Device Configuration Format
+
+```yaml
+devices:
+  - device:
+      host: 192.168.88.1
+      username: admin
+      password: password
+    managementInterfaces:
+      - ether1
+    disabledInterfaces:
+      - ether2
+    ssids:
+      - ssid: MyNetwork
+        passphrase: password123
+        vlan: 100
+        bands: [2.4GHz, 5GHz]
+
+  - device:
+      host: 192.168.88.2
+      username: admin
+      password: password
+    managementInterfaces:
+      - ether1
+    disabledInterfaces:
+      - ether2
+    ssids:
+      - ssid: MyNetwork
+        passphrase: password123
+        vlan: 100
+        bands: [2.4GHz, 5GHz]
+```
+
+Each device can have its own unique configuration or share common settings.
 
 ## Configuration File Format
 
@@ -196,22 +285,59 @@ In RouterOS v7, WiFi is configured directly on interfaces using inline propertie
 
 | Script | Purpose |
 |--------|---------|
-| `apply-config.js` | Apply YAML configuration to device |
+| `apply-config.js` | Apply YAML configuration to single device |
+| `apply-multiple-devices.js` | Apply YAML configuration to multiple devices |
+| `backup-config.js` | Export current device configuration to YAML |
+| `backup-multiple-devices.js` | Export multiple device configurations to YAML |
 | `configure-device.sh` | Automated configuration with password update |
 | `wait-for-device.js` | Wait for device to be ready |
 
 ## Usage Examples
 
-### Configure Single Device
+### Single Device Operations
+
+#### Backup Single Device
+
+```bash
+# Backup to default file (config-backup.yaml)
+./backup-config.js 192.168.88.1 admin password
+
+# Backup to specific file
+./backup-config.js 192.168.88.1 admin password my-backup.yaml
+```
+
+#### Configure Single Device
 
 ```bash
 ./apply-config.js config.yaml
 ```
 
-### Configure Different IP
+#### Configure Different IP
 
 ```bash
 ./apply-config.js config.yaml 192.168.1.100
+```
+
+### Multi-Device Operations
+
+#### Backup Multiple Devices
+
+```bash
+# Update file in-place with full configurations (default)
+./backup-multiple-devices.js multiple-devices.yaml
+
+# Save to different file
+./backup-multiple-devices.js multiple-devices.yaml --output backup.yaml
+```
+
+#### Configure Multiple Devices
+
+```bash
+# Sequential (default, clearer output)
+./apply-multiple-devices.js multiple-devices.yaml
+
+# Parallel (faster)
+./apply-multiple-devices.js multiple-devices.yaml --parallel
 ```
 
 ### Automated Configuration
@@ -300,10 +426,15 @@ This configuration uses **VLAN filtering disabled** for safety. To enable full V
 
 ```
 network-config-as-code/
-├── apply-config.js              # Main configuration script
+├── apply-config.js              # Single device configuration
+├── apply-multiple-devices.js    # Multi-device configuration
+├── backup-config.js             # Single device backup
+├── backup-multiple-devices.js   # Multi-device backup
 ├── mikrotik-no-vlan-filtering.js # Core configuration library
-├── config.yaml                  # Device configuration
-├── config.example.yaml          # Example configuration
+├── config.yaml                  # Single device configuration (gitignored)
+├── config.example.yaml          # Example single device config
+├── multiple-devices.yaml        # Multi-device configuration (gitignored)
+├── multiple-devices.example.yaml # Example multi-device config
 ├── configure-device.sh          # Automated setup script
 ├── wait-for-device.js           # Device availability checker
 ├── README.md                    # This file

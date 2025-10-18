@@ -322,6 +322,240 @@ async function configureMikroTik(config = {}) {
   }
 }
 
+/**
+ * Backup current MikroTik configuration and generate config.yaml structure
+ * @param {Object} credentials - Device credentials {host, username, password}
+ * @returns {Promise<Object>} Configuration object matching config.yaml schema
+ */
+async function backupMikroTikConfig(credentials = {}) {
+  const mt = new MikroTikSSH(
+    credentials.host || '192.168.88.1',
+    credentials.username || 'admin',
+    credentials.password || 'admin'
+  );
+
+  try {
+    await mt.connect();
+
+    console.log('\n========================================');
+    console.log('MikroTik Configuration Backup');
+    console.log('========================================\n');
+
+    const config = {
+      device: {
+        host: credentials.host || '192.168.88.1',
+        username: credentials.username || 'admin',
+        password: credentials.password || 'admin'
+      },
+      managementInterfaces: [],
+      disabledInterfaces: [],
+      ssids: []
+    };
+
+    // Step 1: Get disabled interfaces
+    console.log('=== Reading Interface Status ===');
+    try {
+      const ethernetInterfaces = await mt.exec('/interface ethernet print detail without-paging');
+      const lines = ethernetInterfaces.split('\n');
+
+      // Parse interfaces - look for lines starting with flags (e.g., " 0 RS", " 1 XS")
+      // X flag indicates disabled
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        // Match lines that start with index and flags, where X flag is present
+        const flagMatch = line.match(/^\s*\d+\s+X/);
+        if (flagMatch) {
+          // Look for default-name in this line or subsequent lines
+          let searchLine = line;
+          let j = i;
+          while (j < lines.length && !searchLine.includes('default-name=')) {
+            j++;
+            if (j < lines.length) {
+              searchLine += ' ' + lines[j];
+            }
+          }
+
+          const nameMatch = searchLine.match(/default-name="?([^"\s]+)"?/);
+          if (nameMatch && nameMatch[1].startsWith('ether')) {
+            config.disabledInterfaces.push(nameMatch[1]);
+            console.log(`✓ Found disabled interface: ${nameMatch[1]}`);
+          }
+        }
+      }
+    } catch (e) {
+      console.log(`⚠️  Could not read ethernet interfaces: ${e.message}`);
+    }
+
+    // Step 2: Get bridge ports (for management interfaces)
+    console.log('\n=== Reading Bridge Ports ===');
+    try {
+      const bridgePorts = await mt.exec('/interface bridge port print detail without-paging');
+      const lines = bridgePorts.split('\n');
+
+      for (const line of lines) {
+        const ifaceMatch = line.match(/interface=(ether\d+)/);
+        if (ifaceMatch) {
+          const ifaceName = ifaceMatch[1];
+          // Only add to management interfaces if not disabled
+          if (!config.disabledInterfaces.includes(ifaceName)) {
+            if (!config.managementInterfaces.includes(ifaceName)) {
+              config.managementInterfaces.push(ifaceName);
+              console.log(`✓ Found bridge port: ${ifaceName}`);
+            }
+          } else {
+            console.log(`  Skipping disabled interface: ${ifaceName}`);
+          }
+        }
+      }
+    } catch (e) {
+      console.log(`⚠️  Could not read bridge ports: ${e.message}`);
+    }
+
+    // Default to ether1 if no management interfaces found
+    if (config.managementInterfaces.length === 0) {
+      config.managementInterfaces.push('ether1');
+    }
+
+    // Step 3: Get WiFi interfaces and their configurations
+    console.log('\n=== Reading WiFi Configurations ===');
+    try {
+      const wifiInterfaces = await mt.exec('/interface wifi print detail without-paging');
+      const lines = wifiInterfaces.split('\n');
+
+      // Parse WiFi interface details
+      const interfaces = [];
+      let currentInterface = null;
+
+      for (const line of lines) {
+        if (line.trim().startsWith('0') || line.trim().startsWith('1') || line.trim().startsWith('2') ||
+            line.trim().startsWith('3') || line.trim().startsWith('4') || line.trim().startsWith('5')) {
+          // New interface entry
+          if (currentInterface) {
+            interfaces.push(currentInterface);
+          }
+          currentInterface = { raw: line };
+        } else if (currentInterface && line.trim()) {
+          // Continuation of current interface
+          currentInterface.raw += ' ' + line.trim();
+        }
+      }
+      if (currentInterface) {
+        interfaces.push(currentInterface);
+      }
+
+      // Parse each interface
+      for (const iface of interfaces) {
+        const raw = iface.raw;
+
+        // Extract key properties
+        const nameMatch = raw.match(/name="?([^"\s]+)"?/);
+        // Match both full format (configuration.ssid=) and shorthand (.ssid=)
+        const ssidMatch = raw.match(/(?:configuration)?\.ssid="([^"]+)"/);
+        const datapathMatch = raw.match(/datapath="?([^"\s]+)"?/);
+        // Match both full format and shorthand for passphrase
+        const passphraseMatch = raw.match(/(?:security)?\.passphrase="([^"]+)"/);
+        const masterMatch = raw.match(/master-interface=([^\s]+)/);
+        const disabledMatch = raw.match(/disabled=yes/);
+
+        if (!nameMatch || disabledMatch) continue;
+
+        const name = nameMatch[1];
+        const ssid = ssidMatch ? ssidMatch[1] : null;
+        const datapathName = datapathMatch ? datapathMatch[1] : null;
+        const passphrase = passphraseMatch ? passphraseMatch[1] : null;
+        const isMaster = !masterMatch;
+
+        if (ssid && datapathName) {
+          iface.name = name;
+          iface.ssid = ssid;
+          iface.datapathName = datapathName;
+          iface.passphrase = passphrase;
+          iface.isMaster = isMaster;
+
+          // Determine band from interface name
+          if (name.includes('wifi1')) {
+            iface.band = '2.4GHz';
+          } else if (name.includes('wifi2')) {
+            iface.band = '5GHz';
+          }
+
+          console.log(`✓ Found WiFi interface: ${name} - SSID: ${ssid}`);
+        }
+      }
+
+      // Step 4: Get datapath VLAN information
+      console.log('\n=== Reading WiFi Datapaths ===');
+      const datapaths = {};
+      try {
+        const datapathOutput = await mt.exec('/interface wifi datapath print detail without-paging');
+        const dpLines = datapathOutput.split('\n');
+
+        for (const line of dpLines) {
+          const nameMatch = line.match(/name="?([^"\s]+)"?/);
+          const vlanMatch = line.match(/vlan-id=(\d+)/);
+
+          if (nameMatch && vlanMatch) {
+            datapaths[nameMatch[1]] = parseInt(vlanMatch[1]);
+            console.log(`✓ Found datapath: ${nameMatch[1]} -> VLAN ${vlanMatch[1]}`);
+          }
+        }
+      } catch (e) {
+        console.log(`⚠️  Could not read datapaths: ${e.message}`);
+      }
+
+      // Step 5: Build SSID configurations
+      console.log('\n=== Building SSID Configuration ===');
+      const ssidMap = new Map();
+
+      for (const iface of interfaces) {
+        if (!iface.ssid || !iface.band || !iface.datapathName) continue;
+
+        const vlan = datapaths[iface.datapathName];
+        if (vlan === undefined) continue;
+
+        // Group by SSID+VLAN+passphrase
+        const key = `${iface.ssid}|${vlan}|${iface.passphrase || ''}`;
+
+        if (!ssidMap.has(key)) {
+          ssidMap.set(key, {
+            ssid: iface.ssid,
+            passphrase: iface.passphrase || 'UNKNOWN',
+            vlan: vlan,
+            bands: []
+          });
+        }
+
+        const ssidConfig = ssidMap.get(key);
+        if (!ssidConfig.bands.includes(iface.band)) {
+          ssidConfig.bands.push(iface.band);
+        }
+      }
+
+      config.ssids = Array.from(ssidMap.values());
+
+      for (const ssid of config.ssids) {
+        console.log(`✓ SSID: ${ssid.ssid}`);
+        console.log(`  Bands: ${ssid.bands.join(', ')}`);
+        console.log(`  VLAN: ${ssid.vlan}`);
+      }
+
+    } catch (e) {
+      console.log(`⚠️  Could not read WiFi configurations: ${e.message}`);
+    }
+
+    console.log('\n========================================');
+    console.log('✓✓✓ Backup Complete! ✓✓✓');
+    console.log('========================================\n');
+
+    await mt.close();
+    return config;
+  } catch (error) {
+    console.error('\n✗ Backup Error:', error.message);
+    await mt.close();
+    throw error;
+  }
+}
+
 if (require.main === module) {
   configureMikroTik().catch(err => {
     console.error('Failed:', err.message);
@@ -329,4 +563,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { configureMikroTik, MikroTikSSH };
+module.exports = { configureMikroTik, backupMikroTikConfig, MikroTikSSH };

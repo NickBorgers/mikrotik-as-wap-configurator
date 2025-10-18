@@ -1,10 +1,13 @@
 {
   "name": "network-config-as-code",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "YAML-based configuration management for MikroTik network devices",
   "main": "mikrotik-safe-configure.js",
   "scripts": {
     "apply": "node apply-config.js",
+    "apply-multiple": "node apply-multiple-devices.js",
+    "backup": "node backup-config.js",
+    "backup-multiple": "node backup-multiple-devices.js",
     "inspect": "node mikrotik-inspect.js",
     "verify": "node mikrotik-verify.js",
     "wifi-inspect": "node mikrotik-wifi-inspect.js"
@@ -24,6 +27,9 @@
     "ssh2": "^1.17.0"
   },
   "bin": {
-    "mikrotik-apply": "./apply-config.js"
+    "mikrotik-apply": "./apply-config.js",
+    "mikrotik-apply-multiple": "./apply-multiple-devices.js",
+    "mikrotik-backup": "./backup-config.js",
+    "mikrotik-backup-multiple": "./backup-multiple-devices.js"
   }
 }

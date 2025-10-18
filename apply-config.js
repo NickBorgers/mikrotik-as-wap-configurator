@@ -34,6 +34,9 @@ function validateConfig(config) {
     config.ssids.forEach((ssid, index) => {
       if (!ssid.ssid) errors.push(`SSID ${index}: missing ssid`);
       if (!ssid.passphrase) errors.push(`SSID ${index}: missing passphrase`);
+      if (ssid.passphrase === 'UNKNOWN') {
+        errors.push(`SSID ${index} (${ssid.ssid}): passphrase is UNKNOWN - please set a real passphrase. UNKNOWN is used in backups when passphrases cannot be retrieved from devices.`);
+      }
       if (ssid.vlan === undefined) errors.push(`SSID ${index}: missing vlan`);
       if (!ssid.bands || ssid.bands.length === 0) {
         errors.push(`SSID ${index}: missing bands (must specify 2.4GHz, 5GHz, or both)`);

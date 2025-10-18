@@ -13,8 +13,13 @@
 ### Core Files
 - `mikrotik-no-vlan-filtering.js` - Main configuration library with SSH client wrapper
 - `apply-config.js` - CLI tool that validates YAML and calls configureMikroTik()
+- `backup-config.js` - CLI tool that exports current device config to YAML
+- `apply-multiple-devices.js` - CLI tool for multi-device configuration
+- `backup-multiple-devices.js` - CLI tool for multi-device backup
 - `config.yaml` - Active device configuration (gitignored, contains credentials)
 - `config.example.yaml` - Example for documentation and Docker image
+- `multiple-devices.yaml` - Multi-device configuration file (gitignored, contains credentials)
+- `multiple-devices.example.yaml` - Example multi-device configuration
 
 ### Key Design Decisions
 
@@ -97,9 +102,30 @@ const BAND_TO_INTERFACE = {
 
 ## Testing
 
+Backup existing configuration:
+```bash
+./backup-config.js 10.212.254.51 admin DQ45LVEQRZ config.yaml
+```
+
 Apply configuration:
 ```bash
 ./apply-config.js config.yaml
+```
+
+Multi-device backup (updates file in-place):
+```bash
+./backup-multiple-devices.js multiple-devices.yaml
+```
+
+Multi-device backup (save to different file):
+```bash
+./backup-multiple-devices.js multiple-devices.yaml --output backup.yaml
+```
+
+Multi-device apply:
+```bash
+./apply-multiple-devices.js multiple-devices.yaml
+./apply-multiple-devices.js multiple-devices.yaml --parallel
 ```
 
 Check device (requires ssh2 npm package):
