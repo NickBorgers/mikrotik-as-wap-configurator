@@ -438,6 +438,21 @@ async function configureMikroTik(config = {}) {
       }
     }
 
+    // Step 4.5: Disable master interfaces for bands with no SSIDs
+    console.log('\n=== Disabling Unused Bands ===');
+
+    for (const [band, count] of Object.entries(bandUsage)) {
+      if (count === 0) {
+        const masterInterface = BAND_TO_INTERFACE[band];
+        try {
+          await mt.exec(`/interface/wifi set [find default-name=${masterInterface}] disabled=yes`);
+          console.log(`✓ Disabled ${masterInterface} (${band}) - no SSIDs configured`);
+        } catch (e) {
+          console.log(`⚠️  Could not disable ${masterInterface}: ${e.message}`);
+        }
+      }
+    }
+
     // Step 5: Ensure bridge VLAN filtering is DISABLED
     console.log('\n=== Step 5: Ensuring Bridge VLAN Filtering is Disabled ===');
     await mt.exec('/interface bridge set bridge vlan-filtering=no');
