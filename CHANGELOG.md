@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.6.1] - 2025-10-19 - Fix Old Configuration Persistence
+
+### Fixed - Band Configuration Cleanup
+- **Master WiFi interface cleanup** - Fixed issue where old SSIDs persisted when all SSIDs removed from a band
+- **Explicit band disabling** - Master interfaces (wifi1, wifi2) now disabled when no SSIDs configured for that band
+- **Prevents ghost broadcasts** - Ensures devices don't continue broadcasting old configurations after SSID removal
+- Script now tracks band usage and disables unused master interfaces in new Step 4.5
+
+### Bug Fix Details
+When removing all SSIDs from a band (e.g., removing all 5GHz SSIDs), the master WiFi interface would remain enabled with its old configuration. This caused devices to continue broadcasting previously configured SSIDs even though they were removed from the YAML configuration.
+
+The fix adds a new cleanup step after SSID configuration that:
+1. Checks which bands have zero SSIDs configured
+2. Explicitly disables master interfaces for unused bands
+3. Prevents old configurations from persisting
+
+### Example Scenario
+**Before**: Device configured with 5GHz SSIDs, then updated to only broadcast 2.4GHz
+- **Problem**: Old 5GHz SSIDs continued broadcasting
+- **Solution**: wifi2 (5GHz master interface) is now disabled when no 5GHz SSIDs are configured
+
 ## [2.6.0] - 2025-10-18 - Channel Width Control and Enhanced Backup
 
 ### Added - Channel Width Configuration
