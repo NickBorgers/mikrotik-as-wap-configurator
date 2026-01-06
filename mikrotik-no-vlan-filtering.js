@@ -49,6 +49,12 @@ class MikroTikSSH {
 
   async exec(command) {
     return new Promise((resolve, reject) => {
+      // Check if connection is still alive
+      if (!this.conn || !this.conn.readable || !this.conn.writable) {
+        reject(new Error('Not connected'));
+        return;
+      }
+
       const timeout = setTimeout(() => {
         reject(new Error('Command timeout'));
       }, 30000);
@@ -77,6 +83,10 @@ class MikroTikSSH {
         });
       });
     });
+  }
+
+  isConnected() {
+    return this.conn && this.conn.readable && this.conn.writable;
   }
 
   async close() {
@@ -126,13 +136,13 @@ async function configureMikroTik(config = {}) {
     let deviceIdentity = config.identity; // Allow explicit identity override
 
     if (!deviceIdentity && config.host) {
-      // Check if host is FQDN (contains dots)
-      if (config.host.includes('.')) {
+      // Check if host is FQDN (contains dots) and NOT an IP address
+      if (config.host.includes('.') && !config.host.match(/^\d+\.\d+\.\d+\.\d+$/)) {
         // Extract hostname from FQDN (everything before first dot)
         deviceIdentity = config.host.split('.')[0];
         console.log(`✓ Extracted hostname from FQDN: ${deviceIdentity}`);
       } else if (!config.host.match(/^\d+\.\d+\.\d+\.\d+$/)) {
-        // If not an IP address, use it as hostname
+        // If not an IP address and not FQDN, use it as hostname
         deviceIdentity = config.host;
         console.log(`✓ Using host as identity: ${deviceIdentity}`);
       }
@@ -146,7 +156,7 @@ async function configureMikroTik(config = {}) {
         console.log(`⚠️  Could not set device identity: ${e.message}`);
       }
     } else {
-      console.log('⚠️  No hostname found to set as identity');
+      console.log('⚠️  No hostname found to set as identity (using IP address for connection)');
     }
 
     // Step 0.5: Ensure Bridge Exists (for fresh devices)
@@ -184,100 +194,9 @@ async function configureMikroTik(config = {}) {
       console.log('⚠️  Could not disable VLAN filtering: ' + e.message);
     }
 
-    // Step 2: Configure as Managed WAP (Disable Router Functions)
-    console.log('\n=== Step 2: Configuring as Managed WAP ===');
-
-    // Disable DHCP server (WAP should not provide DHCP)
-    try {
-      // First remove DHCP servers completely
-      await mt.exec('/ip dhcp-server remove [find]');
-      console.log('✓ Removed all DHCP servers');
-    } catch (e) {
-      if (e.message.includes('no such item')) {
-        console.log('✓ No DHCP servers to remove');
-      } else {
-        console.log('⚠️  Could not remove DHCP servers: ' + e.message);
-      }
-    }
-
-    // Remove DHCP client on bridge (WAP should get management IP from upstream)
-    try {
-      await mt.exec('/ip dhcp-client remove [find interface=bridge]');
-      console.log('✓ Removed DHCP client on bridge');
-    } catch (e) {
-      if (e.message.includes('no such item')) {
-        // Try to add DHCP client if not exists
-        try {
-          await mt.exec('/ip dhcp-client add interface=bridge disabled=no');
-          console.log('✓ Added DHCP client on bridge for management');
-        } catch (addErr) {
-          console.log('⚠️  Could not configure DHCP client: ' + addErr.message);
-        }
-      }
-    }
-
-    // Remove default IP address (192.168.88.1/24)
-    try {
-      await mt.exec('/ip address remove [find address="192.168.88.1/24"]');
-      console.log('✓ Removed default IP address 192.168.88.1/24');
-    } catch (e) {
-      if (e.message.includes('no such item')) {
-        console.log('✓ Default IP already removed');
-      } else {
-        console.log('⚠️  Could not remove default IP: ' + e.message);
-      }
-    }
-
-    // Remove any static IP addresses on bridge (except link-local)
-    try {
-      await mt.exec('/ip address remove [find interface=bridge dynamic=no]');
-      console.log('✓ Removed static IP addresses from bridge');
-    } catch (e) {
-      if (e.message.includes('no such item')) {
-        console.log('✓ No static IPs to remove from bridge');
-      } else {
-        console.log('⚠️  Some IPs may remain: ' + e.message);
-      }
-    }
-
-    // Disable DNS server
-    try {
-      await mt.exec('/ip dns set allow-remote-requests=no');
-      console.log('✓ Disabled DNS server for remote requests');
-    } catch (e) {
-      console.log('⚠️  Could not disable DNS server: ' + e.message);
-    }
-
-    // Remove firewall NAT rules (WAP doesn't need NAT)
-    try {
-      await mt.exec('/ip firewall nat remove [find]');
-      console.log('✓ Removed all NAT rules');
-    } catch (e) {
-      if (e.message.includes('no such item')) {
-        console.log('✓ No NAT rules to remove');
-      } else {
-        console.log('⚠️  Could not remove NAT rules: ' + e.message);
-      }
-    }
-
-    // Ensure DHCP client is enabled on bridge for management
-    try {
-      await mt.exec('/ip dhcp-client add interface=bridge disabled=no');
-      console.log('✓ Added DHCP client on bridge for management');
-    } catch (e) {
-      if (e.message.includes('already have')) {
-        // Enable existing DHCP client
-        try {
-          await mt.exec('/ip dhcp-client enable [find interface=bridge]');
-          console.log('✓ Enabled DHCP client on bridge');
-        } catch (enableErr) {
-          console.log('⚠️  DHCP client status unknown: ' + enableErr.message);
-        }
-      }
-    }
-
-    // Step 3: Configure Bridge Ports
-    console.log('\n=== Step 3: Configuring Bridge Ports ===');
+    // Step 2: Configure Bridge Ports FIRST (before removing default IP)
+    // This ensures management access is established before we remove the default config
+    console.log('\n=== Step 2: Configuring Bridge Ports (Management Access) ===');
 
     // Handle management interfaces (can be simple interfaces or bonds)
     const mgmtInterfaces = config.managementInterfaces || ['ether1'];
@@ -376,30 +295,185 @@ async function configureMikroTik(config = {}) {
       }
     }
 
+    // Step 2.5: Ensure DHCP client is configured on bridge BEFORE removing default IP
+    console.log('\n=== Step 2.5: Establishing Management via DHCP ===');
+
+    // First, ensure DHCP client exists on bridge
+    try {
+      await mt.exec('/ip dhcp-client add interface=bridge disabled=no');
+      console.log('✓ Added DHCP client on bridge');
+    } catch (e) {
+      if (e.message.includes('already have')) {
+        // Enable existing DHCP client
+        try {
+          await mt.exec('/ip dhcp-client enable [find interface=bridge]');
+          console.log('✓ Enabled existing DHCP client on bridge');
+        } catch (enableErr) {
+          console.log('⚠️  DHCP client already enabled');
+        }
+      } else {
+        console.log('⚠️  Could not add DHCP client: ' + e.message);
+      }
+    }
+
+    // Give DHCP client time to obtain an IP
+    console.log('⏳ Waiting for DHCP client to obtain IP address...');
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // Check if DHCP client has an IP address
+    let hasManagementIP = false;
+    let connectedViaDefaultIP = false;
+
+    try {
+      const dhcpStatus = await mt.exec('/ip dhcp-client print detail where interface=bridge');
+      if (dhcpStatus.includes('status=bound') || dhcpStatus.includes('address=')) {
+        console.log('✓ DHCP client has obtained an IP address');
+        hasManagementIP = true;
+      } else {
+        console.log('⚠️  DHCP client has not obtained an IP yet');
+      }
+
+      // Check if we're connected via the default IP
+      if (config.host === '192.168.88.1') {
+        connectedViaDefaultIP = true;
+        console.log('⚠️  Connected via default IP 192.168.88.1');
+      }
+    } catch (e) {
+      console.log('⚠️  Could not verify DHCP status: ' + e.message);
+    }
+
+    // Step 3: Configure as Managed WAP (Disable Router Functions)
+    console.log('\n=== Step 3: Configuring as Managed WAP ===');
+
+    // Only proceed with removing default IP if we have alternative management access
+    // OR if we're not connected via the default IP
+    const safeToRemoveDefaultIP = hasManagementIP || !connectedViaDefaultIP;
+
+    // Disable DHCP server (WAP should not provide DHCP)
+    try {
+      await mt.exec('/ip dhcp-server remove [find]');
+      console.log('✓ Removed all DHCP servers');
+    } catch (e) {
+      if (e.message.includes('no such item')) {
+        console.log('✓ No DHCP servers to remove');
+      } else {
+        console.log('⚠️  Could not remove DHCP servers: ' + e.message);
+      }
+    }
+
+    // Remove default IP address (192.168.88.1/24) - but only if safe to do so
+    if (safeToRemoveDefaultIP) {
+      try {
+        await mt.exec('/ip address remove [find address="192.168.88.1/24"]');
+        console.log('✓ Removed default IP address 192.168.88.1/24');
+      } catch (e) {
+        if (e.message.includes('no such item')) {
+          console.log('✓ Default IP already removed');
+        } else {
+          console.log('⚠️  Could not remove default IP: ' + e.message);
+        }
+      }
+
+      // Remove any other static IP addresses on bridge
+      try {
+        await mt.exec('/ip address remove [find interface=bridge dynamic=no]');
+        console.log('✓ Removed static IP addresses from bridge');
+      } catch (e) {
+        if (e.message.includes('no such item')) {
+          console.log('✓ No static IPs to remove from bridge');
+        } else {
+          console.log('⚠️  Some IPs may remain: ' + e.message);
+        }
+      }
+    } else {
+      console.log('⚠️  Keeping default IP 192.168.88.1 - no alternative management access yet');
+      console.log('    Please reconnect via DHCP-assigned IP after configuration completes');
+    }
+
+    // Disable DNS server for remote requests
+    try {
+      await mt.exec('/ip dns set allow-remote-requests=no');
+      console.log('✓ Disabled DNS server for remote requests');
+    } catch (e) {
+      console.log('⚠️  Could not disable DNS server: ' + e.message);
+
+      // Check if we lost connection after removing default IP
+      if ((e.message === 'Not connected' || e.message === 'Command timeout') && connectedViaDefaultIP) {
+        console.log('\n========================================');
+        console.log('⚠️  Lost connection after removing default IP');
+        console.log('========================================');
+        console.log('This is EXPECTED when configuring fresh devices via 192.168.88.1');
+        console.log('\nNext steps:');
+        console.log('1. The device should now be accessible via DHCP on the management interfaces');
+        console.log('2. Check your DHCP server logs for the new IP address');
+        console.log('3. Reconnect to the new IP and re-run this script to complete WiFi configuration');
+        console.log('\nThe device is partially configured:');
+        console.log('✓ Bridge and management interfaces configured');
+        console.log('✓ DHCP client enabled on bridge');
+        console.log('✓ Default router functions disabled');
+        console.log('✗ WiFi configuration incomplete - re-run script to complete');
+        await mt.close();
+        return false;
+      }
+    }
+
+    // Remove firewall NAT rules (WAP doesn't need NAT)
+    try {
+      await mt.exec('/ip firewall nat remove [find]');
+      console.log('✓ Removed all NAT rules');
+    } catch (e) {
+      if (e.message.includes('no such item')) {
+        console.log('✓ No NAT rules to remove');
+      } else {
+        console.log('⚠️  Could not remove NAT rules: ' + e.message);
+
+        // Check for connection loss
+        if ((e.message === 'Not connected' || e.message === 'Command timeout') && connectedViaDefaultIP) {
+          console.log('\n⚠️  Connection lost - device should be accessible via new management IP');
+          console.log('    Please reconnect and re-run to complete configuration');
+          await mt.close();
+          return false;
+        }
+      }
+    }
+
     // Step 4: Initialize WiFi Interfaces (for fresh devices)
     console.log('\n=== Step 4: Initializing WiFi Interfaces ===');
 
-    // Detect which WiFi package is in use
+    // Detect which WiFi package is in use - with retry logic for fresh devices
     let wifiPackage = 'unknown';
-    try {
-      // Check for wifiwave2 package (newer chipsets)
-      const wifiwave2Check = await mt.exec('/interface/wifiwave2 print count-only');
-      wifiPackage = 'wifiwave2';
-      console.log('✓ Using WiFiWave2 package (newer chipset)');
-    } catch (e) {
+    let retries = 3;
+
+    while (wifiPackage === 'unknown' && retries > 0) {
       try {
-        // Check for wifi/wifi-qcom package (original chipsets)
-        const wifiCheck = await mt.exec('/interface/wifi print count-only');
-        wifiPackage = 'wifi-qcom';
-        console.log('✓ Using WiFi-QCOM package (original chipset)');
-      } catch (e2) {
-        // If both fail, try wireless (very old devices)
+        // Check for wifiwave2 package (newer chipsets)
+        const wifiwave2Check = await mt.exec('/interface/wifiwave2 print count-only');
+        wifiPackage = 'wifiwave2';
+        console.log('✓ Using WiFiWave2 package (newer chipset)');
+      } catch (e) {
         try {
-          const wirelessCheck = await mt.exec('/interface/wireless print count-only');
-          wifiPackage = 'wireless';
-          console.log('✓ Using Wireless package (legacy)');
-        } catch (e3) {
-          console.log('⚠️  Could not determine WiFi package type');
+          // Check for wifi/wifi-qcom package (original chipsets)
+          const wifiCheck = await mt.exec('/interface/wifi print count-only');
+          wifiPackage = 'wifi-qcom';
+          console.log('✓ Using WiFi-QCOM package (original chipset)');
+        } catch (e2) {
+          // If both fail, try wireless (very old devices)
+          try {
+            const wirelessCheck = await mt.exec('/interface/wireless print count-only');
+            wifiPackage = 'wireless';
+            console.log('✓ Using Wireless package (legacy)');
+          } catch (e3) {
+            if (retries > 1) {
+              console.log(`⚠️  WiFi package not detected yet, retrying... (${retries - 1} attempts left)`);
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              retries--;
+            } else {
+              console.log('⚠️  Could not determine WiFi package type after 3 attempts');
+              console.log('    Device may need more time to initialize WiFi subsystem');
+              console.log('    Please re-run the script in a few moments');
+              retries = 0;
+            }
+          }
         }
       }
     }
@@ -800,6 +874,15 @@ async function configureMikroTik(config = {}) {
           console.log(`  ✓ ${wifiInterface} (${band}) configured with VLAN ${vlan} tagging`);
         } catch (e) {
           console.log(`  ✗ Failed to configure ${wifiInterface}: ${e.message}`);
+
+          // Check if we lost connection
+          if (e.message === 'Not connected' || e.message === 'Command timeout') {
+            console.log('\n⚠️  Lost connection to device - this is expected when configuring fresh devices');
+            console.log('    The device should now be accessible via DHCP-assigned IP on the management interfaces');
+            console.log('    Please reconnect and re-run the script to complete configuration');
+            await mt.close();
+            return false;
+          }
         }
       }
     }
