@@ -149,8 +149,100 @@ async function configureMikroTik(config = {}) {
       console.log('⚠️  Could not disable VLAN filtering: ' + e.message);
     }
 
-    // Step 2: Configure Bridge Ports
-    console.log('\n=== Step 2: Configuring Bridge Ports ===');
+    // Step 2: Configure as Managed WAP (Disable Router Functions)
+    console.log('\n=== Step 2: Configuring as Managed WAP ===');
+
+    // Disable DHCP server (WAP should not provide DHCP)
+    try {
+      // First remove DHCP servers completely
+      await mt.exec('/ip dhcp-server remove [find]');
+      console.log('✓ Removed all DHCP servers');
+    } catch (e) {
+      if (e.message.includes('no such item')) {
+        console.log('✓ No DHCP servers to remove');
+      } else {
+        console.log('⚠️  Could not remove DHCP servers: ' + e.message);
+      }
+    }
+
+    // Remove DHCP client on bridge (WAP should get management IP from upstream)
+    try {
+      await mt.exec('/ip dhcp-client remove [find interface=bridge]');
+      console.log('✓ Removed DHCP client on bridge');
+    } catch (e) {
+      if (e.message.includes('no such item')) {
+        // Try to add DHCP client if not exists
+        try {
+          await mt.exec('/ip dhcp-client add interface=bridge disabled=no');
+          console.log('✓ Added DHCP client on bridge for management');
+        } catch (addErr) {
+          console.log('⚠️  Could not configure DHCP client: ' + addErr.message);
+        }
+      }
+    }
+
+    // Remove default IP address (192.168.88.1/24)
+    try {
+      await mt.exec('/ip address remove [find address="192.168.88.1/24"]');
+      console.log('✓ Removed default IP address 192.168.88.1/24');
+    } catch (e) {
+      if (e.message.includes('no such item')) {
+        console.log('✓ Default IP already removed');
+      } else {
+        console.log('⚠️  Could not remove default IP: ' + e.message);
+      }
+    }
+
+    // Remove any static IP addresses on bridge (except link-local)
+    try {
+      await mt.exec('/ip address remove [find interface=bridge dynamic=no]');
+      console.log('✓ Removed static IP addresses from bridge');
+    } catch (e) {
+      if (e.message.includes('no such item')) {
+        console.log('✓ No static IPs to remove from bridge');
+      } else {
+        console.log('⚠️  Some IPs may remain: ' + e.message);
+      }
+    }
+
+    // Disable DNS server
+    try {
+      await mt.exec('/ip dns set allow-remote-requests=no');
+      console.log('✓ Disabled DNS server for remote requests');
+    } catch (e) {
+      console.log('⚠️  Could not disable DNS server: ' + e.message);
+    }
+
+    // Remove firewall NAT rules (WAP doesn't need NAT)
+    try {
+      await mt.exec('/ip firewall nat remove [find]');
+      console.log('✓ Removed all NAT rules');
+    } catch (e) {
+      if (e.message.includes('no such item')) {
+        console.log('✓ No NAT rules to remove');
+      } else {
+        console.log('⚠️  Could not remove NAT rules: ' + e.message);
+      }
+    }
+
+    // Ensure DHCP client is enabled on bridge for management
+    try {
+      await mt.exec('/ip dhcp-client add interface=bridge disabled=no');
+      console.log('✓ Added DHCP client on bridge for management');
+    } catch (e) {
+      if (e.message.includes('already have')) {
+        // Enable existing DHCP client
+        try {
+          await mt.exec('/ip dhcp-client enable [find interface=bridge]');
+          console.log('✓ Enabled DHCP client on bridge');
+        } catch (enableErr) {
+          console.log('⚠️  DHCP client status unknown: ' + enableErr.message);
+        }
+      }
+    }
+
+    // Step 3: Configure Bridge Ports
+    console.log('\n=== Step 3: Configuring Bridge Ports ===');
 
     // Add ether1 to bridge (if not already)
     try {
@@ -178,8 +270,8 @@ async function configureMikroTik(config = {}) {
       }
     }
 
-    // Step 3: Initialize WiFi Interfaces (for fresh devices)
-    console.log('\n=== Step 3: Initializing WiFi Interfaces ===');
+    // Step 4: Initialize WiFi Interfaces (for fresh devices)
+    console.log('\n=== Step 4: Initializing WiFi Interfaces ===');
 
     // Detect which WiFi package is in use
     let wifiPackage = 'unknown';
@@ -262,8 +354,8 @@ async function configureMikroTik(config = {}) {
       console.log('⚠️  Legacy wireless interfaces detected - manual migration needed');
     }
 
-    // Step 4: Clean up old virtual WiFi interfaces and datapaths
-    console.log('\n=== Step 4: Cleaning Up Old Configurations ===');
+    // Step 5: Clean up old virtual WiFi interfaces and datapaths
+    console.log('\n=== Step 5: Cleaning Up Old Configurations ===');
 
     // Skip cleanup if package type is unknown
     if (wifiPackage === 'unknown' || wifiPackage === 'wireless') {
@@ -320,8 +412,8 @@ async function configureMikroTik(config = {}) {
       }
     }
 
-    // Step 5: Configure WiFi Optimization Settings (Channel, Power, Roaming)
-    console.log('\n=== Step 5: Configuring WiFi Optimization Settings ===');
+    // Step 6: Configure WiFi Optimization Settings (Channel, Power, Roaming)
+    console.log('\n=== Step 6: Configuring WiFi Optimization Settings ===');
 
     const wifiConfig = config.wifi || {};
     const wifiPath = getWifiPath(wifiPackage);
@@ -483,8 +575,8 @@ async function configureMikroTik(config = {}) {
       }
     }
 
-    // Step 6: Process each SSID
-    console.log('\n=== Step 6: Configuring SSIDs ===');
+    // Step 7: Process each SSID
+    console.log('\n=== Step 7: Configuring SSIDs ===');
 
     // Track which interfaces have been used for each band
     const bandUsage = {
@@ -606,7 +698,7 @@ async function configureMikroTik(config = {}) {
       }
     }
 
-    // Step 6.5: Disable master interfaces for bands with no SSIDs
+    // Step 7.5: Disable master interfaces for bands with no SSIDs
     console.log('\n=== Disabling Unused Bands ===');
 
     for (const [band, count] of Object.entries(bandUsage)) {
