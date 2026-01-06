@@ -128,6 +128,23 @@ async function main() {
     console.log('\n✓ Configuration applied successfully!');
   } catch (error) {
     console.error('\n✗ Configuration failed:', error.message);
+
+    // Add helpful hints for common issues
+    if (error.message.includes('Authentication failed')) {
+      console.log('\nHint: For fresh MikroTik devices:');
+      console.log('  - Default username: admin');
+      console.log('  - Default password: (blank/empty) or check device label');
+      console.log('  - After factory reset, password may be on the device sticker');
+    } else if (error.message.includes('Connection refused')) {
+      console.log('\nHint: SSH may not be enabled on the device');
+      console.log('  - Connect via WinBox or WebFig first');
+      console.log('  - Enable SSH: /ip service enable ssh');
+    } else if (error.message.includes('Connection timeout')) {
+      console.log('\nHint: Device may not be reachable');
+      console.log('  - Check network connectivity to', mtConfig.host);
+      console.log('  - Verify firewall rules allow SSH (port 22)');
+    }
+
     process.exit(1);
   }
 }
