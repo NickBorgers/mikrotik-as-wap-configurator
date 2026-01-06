@@ -133,8 +133,9 @@ async function main() {
     if (error.message.includes('Authentication failed')) {
       console.log('\nHint: For fresh MikroTik devices:');
       console.log('  - Default username: admin');
-      console.log('  - Default password: (blank/empty) or check device label');
-      console.log('  - After factory reset, password may be on the device sticker');
+      console.log('  - Default password: Check the sticker on the device or manual');
+      console.log('  - Look for "RouterOS default password" on the device label');
+      console.log('  - Each device has a unique default password for security');
     } else if (error.message.includes('Connection refused')) {
       console.log('\nHint: SSH may not be enabled on the device');
       console.log('  - Connect via WinBox or WebFig first');
