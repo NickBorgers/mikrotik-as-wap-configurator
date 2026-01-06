@@ -23,6 +23,13 @@
 
 ### Key Design Decisions
 
+**Automatic Device Identity**
+- When connecting to devices via FQDN (e.g., indoor-wap-south.nickborgers.net), the hostname is automatically extracted and set as the device identity
+- For indoor-wap-south.nickborgers.net, identity is set to "indoor-wap-south"
+- Identity can be explicitly overridden in config.yaml with `identity: custom-name`
+- When backing up, identity is only stored if it differs from the expected hostname
+- Helps maintain consistent naming across fleet of devices
+
 **VLAN Filtering: DISABLED**
 - Bridge VLAN filtering is intentionally disabled to prevent lockouts
 - We tried enabling it 3+ times during development - always resulted in lockout requiring physical reset

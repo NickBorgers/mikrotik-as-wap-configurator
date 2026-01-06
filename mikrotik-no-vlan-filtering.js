@@ -10,6 +10,11 @@
  * - SSIDs defined by name, not interface
  * - Each SSID can specify bands: 2.4GHz, 5GHz, or both
  * - Per-SSID passphrases and VLANs
+ *
+ * Features:
+ * - Automatic device identity from FQDN hostnames
+ * - WiFi optimization (channel, power, roaming)
+ * - Multi-device configuration support
  */
 
 const { Client } = require('ssh2');
@@ -114,8 +119,38 @@ async function configureMikroTik(config = {}) {
       return false;
     }
 
-    // Step 0: Ensure Bridge Exists (for fresh devices)
-    console.log('=== Step 0: Ensuring Basic Infrastructure ===');
+    // Step 0: Set device identity based on hostname (if FQDN provided)
+    console.log('=== Step 0: Setting Device Identity ===');
+
+    // Extract hostname from FQDN or use configured identity
+    let deviceIdentity = config.identity; // Allow explicit identity override
+
+    if (!deviceIdentity && config.host) {
+      // Check if host is FQDN (contains dots)
+      if (config.host.includes('.')) {
+        // Extract hostname from FQDN (everything before first dot)
+        deviceIdentity = config.host.split('.')[0];
+        console.log(`✓ Extracted hostname from FQDN: ${deviceIdentity}`);
+      } else if (!config.host.match(/^\d+\.\d+\.\d+\.\d+$/)) {
+        // If not an IP address, use it as hostname
+        deviceIdentity = config.host;
+        console.log(`✓ Using host as identity: ${deviceIdentity}`);
+      }
+    }
+
+    if (deviceIdentity) {
+      try {
+        await mt.exec(`/system identity set name="${deviceIdentity}"`);
+        console.log(`✓ Device identity set to: ${deviceIdentity}`);
+      } catch (e) {
+        console.log(`⚠️  Could not set device identity: ${e.message}`);
+      }
+    } else {
+      console.log('⚠️  No hostname found to set as identity');
+    }
+
+    // Step 0.5: Ensure Bridge Exists (for fresh devices)
+    console.log('\n=== Step 0.5: Ensuring Basic Infrastructure ===');
 
     // Check if bridge exists, create if not
     try {
@@ -785,8 +820,44 @@ async function backupMikroTikConfig(credentials = {}) {
       ssids: []
     };
 
+    // Step 0: Get device identity
+    console.log('=== Reading Device Identity ===');
+    try {
+      const identityOutput = await mt.exec('/system identity print');
+      const identityMatch = identityOutput.match(/name:\s*(.+)/);
+      if (identityMatch) {
+        const currentIdentity = identityMatch[1].trim();
+
+        // Only store identity if it's different from hostname
+        // (we auto-set identity from hostname during apply)
+        if (config.device.host.includes('.')) {
+          const expectedIdentity = config.device.host.split('.')[0];
+          if (currentIdentity !== expectedIdentity) {
+            config.identity = currentIdentity;
+            console.log(`✓ Device identity: ${currentIdentity} (differs from hostname)`);
+          } else {
+            console.log(`✓ Device identity: ${currentIdentity} (matches hostname, will auto-set)`);
+          }
+        } else if (!config.device.host.match(/^\d+\.\d+\.\d+\.\d+$/)) {
+          // If host is not IP and not FQDN, check if identity differs
+          if (currentIdentity !== config.device.host) {
+            config.identity = currentIdentity;
+            console.log(`✓ Device identity: ${currentIdentity} (differs from hostname)`);
+          } else {
+            console.log(`✓ Device identity: ${currentIdentity} (matches hostname, will auto-set)`);
+          }
+        } else {
+          // Host is an IP, always store the identity
+          config.identity = currentIdentity;
+          console.log(`✓ Device identity: ${currentIdentity}`);
+        }
+      }
+    } catch (e) {
+      console.log(`⚠️  Could not read device identity: ${e.message}`);
+    }
+
     // Step 1: Get disabled interfaces
-    console.log('=== Reading Interface Status ===');
+    console.log('\n=== Reading Interface Status ===');
     try {
       const ethernetInterfaces = await mt.exec('/interface ethernet print detail without-paging');
       const lines = ethernetInterfaces.split('\n');
