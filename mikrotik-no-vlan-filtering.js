@@ -33,7 +33,18 @@ class MikroTikSSH {
         console.log('✓ Connected to MikroTik device');
         resolve();
       }).on('error', (err) => {
-        reject(err);
+        // Improve error messages for common issues
+        if (err.message.includes('All configured authentication methods failed')) {
+          reject(new Error(`Authentication failed for user '${this.username}' at ${this.host} - check username and password`));
+        } else if (err.message.includes('ECONNREFUSED')) {
+          reject(new Error(`Connection refused to ${this.host}:22 - check if device is reachable and SSH is enabled`));
+        } else if (err.message.includes('ETIMEDOUT') || err.message.includes('Timed out')) {
+          reject(new Error(`Connection timeout to ${this.host} - check network connectivity and firewall rules`));
+        } else if (err.message.includes('EHOSTUNREACH')) {
+          reject(new Error(`Host ${this.host} is unreachable - check network path and routing`));
+        } else {
+          reject(err);
+        }
       }).connect({
         host: this.host,
         port: 22,
