@@ -58,7 +58,18 @@ async function main() {
 
     console.log(`\n✓ Configuration backed up to: ${outputFile}`);
     console.log('\nConfiguration summary:');
-    console.log(`  Management interfaces: ${config.managementInterfaces.join(', ')}`);
+
+    // Format management interfaces for display
+    const mgmtDisplay = config.managementInterfaces.map(iface => {
+      if (typeof iface === 'string') {
+        return iface;
+      } else if (iface.bond) {
+        return `bond (${iface.bond.join('+')})`;
+      }
+      return 'unknown';
+    });
+
+    console.log(`  Management interfaces: ${mgmtDisplay.join(', ')}`);
     console.log(`  Disabled interfaces: ${config.disabledInterfaces.length > 0 ? config.disabledInterfaces.join(', ') : 'none'}`);
 
     if (config.wifi) {
