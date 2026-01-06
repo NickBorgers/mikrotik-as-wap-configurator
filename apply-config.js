@@ -89,6 +89,7 @@ async function main() {
     host: targetIp || config.device.host,
     username: config.device.username,
     password: config.device.password,
+    identity: config.identity,  // Optional explicit identity override
     managementInterfaces: config.managementInterfaces || ['ether1'],
     disabledInterfaces: config.disabledInterfaces || [],
     wifi: config.wifi,  // WiFi optimization settings (channel, power, roaming)

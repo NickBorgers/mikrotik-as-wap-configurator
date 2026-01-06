@@ -123,6 +123,7 @@ async function main() {
         host: deviceConfig.device.host,
         username: deviceConfig.device.username,
         password: deviceConfig.device.password,
+        identity: deviceConfig.identity,  // Optional explicit identity override
         managementInterfaces: deviceConfig.managementInterfaces || ['ether1'],
         disabledInterfaces: deviceConfig.disabledInterfaces || [],
         wifi: deviceConfig.wifi,  // WiFi optimization settings
@@ -149,6 +150,7 @@ async function main() {
         host: deviceConfig.device.host,
         username: deviceConfig.device.username,
         password: deviceConfig.device.password,
+        identity: deviceConfig.identity,  // Optional explicit identity override
         managementInterfaces: deviceConfig.managementInterfaces || ['ether1'],
         disabledInterfaces: deviceConfig.disabledInterfaces || [],
         wifi: deviceConfig.wifi,  // WiFi optimization settings
