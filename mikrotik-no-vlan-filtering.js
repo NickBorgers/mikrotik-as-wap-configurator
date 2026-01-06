@@ -34,7 +34,10 @@ class MikroTikSSH {
         port: 22,
         username: this.username,
         password: this.password,
-        readyTimeout: 10000
+        readyTimeout: 30000,
+        algorithms: {
+          serverHostKey: ['ssh-rsa', 'rsa-sha2-256', 'rsa-sha2-512', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521', 'ssh-ed25519']
+        }
       });
     });
   }
@@ -43,7 +46,7 @@ class MikroTikSSH {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error('Command timeout'));
-      }, 10000);
+      }, 30000);
 
       this.conn.exec(command, (err, stream) => {
         if (err) {
@@ -76,11 +79,17 @@ class MikroTikSSH {
   }
 }
 
-// Map band names to interface names
+// Map band names to interface names (will be updated based on detected package)
 const BAND_TO_INTERFACE = {
   '2.4GHz': 'wifi1',
   '5GHz': 'wifi2'
 };
+
+// Helper to get correct WiFi command path based on package type
+function getWifiPath(wifiPackage, command) {
+  const basePath = wifiPackage === 'wifiwave2' ? '/interface/wifiwave2' : '/interface/wifi';
+  return command ? `${basePath}/${command}` : basePath;
+}
 
 async function configureMikroTik(config = {}) {
   const mt = new MikroTikSSH(
@@ -105,8 +114,43 @@ async function configureMikroTik(config = {}) {
       return false;
     }
 
-    // Step 1: Configure Bridge Ports
-    console.log('=== Step 1: Configuring Bridge Ports ===');
+    // Step 0: Ensure Bridge Exists (for fresh devices)
+    console.log('=== Step 0: Ensuring Basic Infrastructure ===');
+
+    // Check if bridge exists, create if not
+    try {
+      const bridges = await mt.exec('/interface bridge print terse where name=bridge');
+      if (!bridges || !bridges.trim()) {
+        await mt.exec('/interface bridge add name=bridge');
+        console.log('✓ Created bridge');
+      } else {
+        console.log('✓ Bridge already exists');
+      }
+    } catch (e) {
+      // If print fails, try to add anyway
+      try {
+        await mt.exec('/interface bridge add name=bridge');
+        console.log('✓ Created bridge');
+      } catch (addErr) {
+        if (addErr.message.includes('already')) {
+          console.log('✓ Bridge already exists');
+        } else {
+          console.log('⚠️  Could not verify/create bridge: ' + addErr.message);
+        }
+      }
+    }
+
+    // Step 1: Ensure Bridge VLAN Filtering is DISABLED (for safety)
+    console.log('\n=== Step 1: Ensuring Safe Bridge Configuration ===');
+    try {
+      await mt.exec('/interface bridge set bridge vlan-filtering=no');
+      console.log('✓ VLAN filtering is DISABLED (safe for management)');
+    } catch (e) {
+      console.log('⚠️  Could not disable VLAN filtering: ' + e.message);
+    }
+
+    // Step 2: Configure Bridge Ports
+    console.log('\n=== Step 2: Configuring Bridge Ports ===');
 
     // Add ether1 to bridge (if not already)
     try {
@@ -134,49 +178,153 @@ async function configureMikroTik(config = {}) {
       }
     }
 
-    // Step 2: Clean up old virtual WiFi interfaces and datapaths
-    console.log('\n=== Step 2: Cleaning Up Old Configurations ===');
+    // Step 3: Initialize WiFi Interfaces (for fresh devices)
+    console.log('\n=== Step 3: Initializing WiFi Interfaces ===');
 
-    // First remove datapaths (to avoid "in use" errors when removing interfaces)
+    // Detect which WiFi package is in use
+    let wifiPackage = 'unknown';
     try {
-      const datapaths = await mt.exec('/interface/wifi/datapath print terse where name~"wifi"');
-      if (datapaths && datapaths.trim()) {
-        await mt.exec('/interface/wifi/datapath remove [find name~"wifi"]');
-        console.log('✓ Removed old WiFi datapaths');
-      } else {
-        console.log('✓ No datapaths to remove');
-      }
+      // Check for wifiwave2 package (newer chipsets)
+      const wifiwave2Check = await mt.exec('/interface/wifiwave2 print count-only');
+      wifiPackage = 'wifiwave2';
+      console.log('✓ Using WiFiWave2 package (newer chipset)');
     } catch (e) {
-      // Only ignore "no such item" errors
-      if (e.message.includes('no such') || e.message.includes('not found')) {
-        console.log('✓ No datapaths to remove');
-      } else {
-        console.log(`⚠️  Warning: Could not remove datapaths: ${e.message}`);
+      try {
+        // Check for wifi/wifi-qcom package (original chipsets)
+        const wifiCheck = await mt.exec('/interface/wifi print count-only');
+        wifiPackage = 'wifi-qcom';
+        console.log('✓ Using WiFi-QCOM package (original chipset)');
+      } catch (e2) {
+        // If both fail, try wireless (very old devices)
+        try {
+          const wirelessCheck = await mt.exec('/interface/wireless print count-only');
+          wifiPackage = 'wireless';
+          console.log('✓ Using Wireless package (legacy)');
+        } catch (e3) {
+          console.log('⚠️  Could not determine WiFi package type');
+        }
       }
     }
 
-    // Then remove virtual WiFi interfaces
-    try {
-      const virtualInterfaces = await mt.exec('/interface/wifi print terse where master-interface');
-      if (virtualInterfaces && virtualInterfaces.trim()) {
-        await mt.exec('/interface/wifi remove [find master-interface]');
-        console.log('✓ Removed old virtual WiFi interfaces');
-      } else {
-        console.log('✓ No virtual interfaces to remove');
+    // Store the WiFi command prefix based on package
+    const wifiCmd = wifiPackage === 'wifiwave2' ? '/interface/wifiwave2' : '/interface/wifi';
+
+    // Check for specific interfaces based on package type
+    if (wifiPackage === 'wifiwave2') {
+      try {
+        // WiFiWave2 typically uses wifi1/wifi2 naming
+        const wifi1Check = await mt.exec(`${wifiCmd} print terse where name=wifi1`);
+        if (!wifi1Check || !wifi1Check.trim()) {
+          console.log('⚠️  wifi1 (2.4GHz) interface not found - checking alternative names');
+          // Try to find any 2.4GHz interface
+          const band2Check = await mt.exec(`${wifiCmd} print terse where configuration.band~"2ghz"`);
+          if (band2Check && band2Check.trim()) {
+            console.log('✓ Found 2.4GHz interface');
+          }
+        } else {
+          console.log('✓ wifi1 (2.4GHz) interface found');
+        }
+
+        const wifi2Check = await mt.exec(`${wifiCmd} print terse where name=wifi2`);
+        if (!wifi2Check || !wifi2Check.trim()) {
+          console.log('⚠️  wifi2 (5GHz) interface not found - checking alternative names');
+          // Try to find any 5GHz interface
+          const band5Check = await mt.exec(`${wifiCmd} print terse where configuration.band~"5ghz"`);
+          if (band5Check && band5Check.trim()) {
+            console.log('✓ Found 5GHz interface');
+          }
+        } else {
+          console.log('✓ wifi2 (5GHz) interface found');
+        }
+      } catch (e) {
+        console.log('⚠️  Could not verify WiFiWave2 interfaces: ' + e.message);
       }
-    } catch (e) {
-      // Only ignore "no such item" errors
-      if (e.message.includes('no such') || e.message.includes('not found')) {
-        console.log('✓ No virtual interfaces to remove');
-      } else {
-        console.log(`⚠️  Warning: Could not remove virtual interfaces: ${e.message}`);
+    } else if (wifiPackage === 'wifi-qcom') {
+      try {
+        // WiFi-QCOM uses wifi1/wifi2 naming
+        const wifi1Check = await mt.exec(`${wifiCmd} print terse where default-name=wifi1`);
+        if (!wifi1Check || !wifi1Check.trim()) {
+          console.log('⚠️  2.4GHz WiFi interface not found');
+        } else {
+          console.log('✓ wifi1 (2.4GHz) interface found');
+        }
+
+        const wifi2Check = await mt.exec(`${wifiCmd} print terse where default-name=wifi2`);
+        if (!wifi2Check || !wifi2Check.trim()) {
+          console.log('⚠️  5GHz WiFi interface not found');
+        } else {
+          console.log('✓ wifi2 (5GHz) interface found');
+        }
+      } catch (e) {
+        console.log('⚠️  Could not verify WiFi-QCOM interfaces: ' + e.message);
+      }
+    } else if (wifiPackage === 'wireless') {
+      console.log('⚠️  Legacy wireless interfaces detected - manual migration needed');
+    }
+
+    // Step 4: Clean up old virtual WiFi interfaces and datapaths
+    console.log('\n=== Step 4: Cleaning Up Old Configurations ===');
+
+    // Skip cleanup if package type is unknown
+    if (wifiPackage === 'unknown' || wifiPackage === 'wireless') {
+      console.log('⚠️  Skipping cleanup - WiFi package not supported');
+    } else {
+      // First remove datapaths (to avoid "in use" errors when removing interfaces)
+      try {
+        const datapathCmd = wifiPackage === 'wifiwave2'
+          ? '/interface/wifiwave2/datapath print terse where name~"wifi"'
+          : '/interface/wifi/datapath print terse where name~"wifi"';
+
+        const datapaths = await mt.exec(datapathCmd);
+        if (datapaths && datapaths.trim()) {
+          const removeCmd = wifiPackage === 'wifiwave2'
+            ? '/interface/wifiwave2/datapath remove [find name~"wifi"]'
+            : '/interface/wifi/datapath remove [find name~"wifi"]';
+          await mt.exec(removeCmd);
+          console.log('✓ Removed old WiFi datapaths');
+        } else {
+          console.log('✓ No datapaths to remove');
+        }
+      } catch (e) {
+        // Only ignore "no such item" errors
+        if (e.message.includes('no such') || e.message.includes('not found')) {
+          console.log('✓ No datapaths to remove');
+        } else {
+          console.log(`⚠️  Warning: Could not remove datapaths: ${e.message}`);
+        }
+      }
+
+      // Then remove virtual WiFi interfaces
+      try {
+        const printCmd = wifiPackage === 'wifiwave2'
+          ? '/interface/wifiwave2 print terse where master-interface'
+          : '/interface/wifi print terse where master-interface';
+
+        const virtualInterfaces = await mt.exec(printCmd);
+        if (virtualInterfaces && virtualInterfaces.trim()) {
+          const removeCmd = wifiPackage === 'wifiwave2'
+            ? '/interface/wifiwave2 remove [find master-interface]'
+            : '/interface/wifi remove [find master-interface]';
+          await mt.exec(removeCmd);
+          console.log('✓ Removed old virtual WiFi interfaces');
+        } else {
+          console.log('✓ No virtual interfaces to remove');
+        }
+      } catch (e) {
+        // Only ignore "no such item" errors
+        if (e.message.includes('no such') || e.message.includes('not found')) {
+          console.log('✓ No virtual interfaces to remove');
+        } else {
+          console.log(`⚠️  Warning: Could not remove virtual interfaces: ${e.message}`);
+        }
       }
     }
 
-    // Step 3: Configure WiFi Optimization Settings (Channel, Power, Roaming)
-    console.log('\n=== Step 3: Configuring WiFi Optimization Settings ===');
+    // Step 5: Configure WiFi Optimization Settings (Channel, Power, Roaming)
+    console.log('\n=== Step 5: Configuring WiFi Optimization Settings ===');
 
     const wifiConfig = config.wifi || {};
+    const wifiPath = getWifiPath(wifiPackage);
 
     // Configure 2.4GHz band settings
     if (wifiConfig['2.4GHz']) {
@@ -222,7 +370,8 @@ async function configureMikroTik(config = {}) {
 
       if (commands.length > 0) {
         try {
-          await mt.exec(`/interface/wifi set [find default-name=wifi1] ${commands.join(' ')}`);
+          const findClause = wifiPackage === 'wifiwave2' ? '[find name=wifi1]' : '[find default-name=wifi1]';
+          await mt.exec(`${wifiPath} set ${findClause} ${commands.join(' ')}`);
           console.log('  ✓ Applied 2.4GHz band settings');
         } catch (e) {
           console.log(`  ⚠️  Failed to apply 2.4GHz settings: ${e.message}`);
@@ -277,7 +426,8 @@ async function configureMikroTik(config = {}) {
 
       if (commands.length > 0) {
         try {
-          await mt.exec(`/interface/wifi set [find default-name=wifi2] ${commands.join(' ')}`);
+          const findClause = wifiPackage === 'wifiwave2' ? '[find name=wifi2]' : '[find default-name=wifi2]';
+          await mt.exec(`${wifiPath} set ${findClause} ${commands.join(' ')}`);
           console.log('  ✓ Applied 5GHz band settings');
         } catch (e) {
           console.log(`  ⚠️  Failed to apply 5GHz settings: ${e.message}`);
@@ -321,7 +471,11 @@ async function configureMikroTik(config = {}) {
 
       if (roamingCommands.length > 0) {
         try {
-          await mt.exec(`/interface/wifi set [find default-name=wifi1],[find default-name=wifi2] ${roamingCommands.join(' ')}`);
+          if (wifiPackage === 'wifiwave2') {
+            await mt.exec(`${wifiPath} set [find name=wifi1],[find name=wifi2] ${roamingCommands.join(' ')}`);
+          } else {
+            await mt.exec(`${wifiPath} set [find default-name=wifi1],[find default-name=wifi2] ${roamingCommands.join(' ')}`);
+          }
           console.log('  ✓ Applied roaming settings to all WiFi interfaces');
         } catch (e) {
           console.log(`  ⚠️  Failed to apply roaming settings: ${e.message}`);
@@ -329,8 +483,8 @@ async function configureMikroTik(config = {}) {
       }
     }
 
-    // Step 4: Process each SSID
-    console.log('\n=== Step 4: Configuring SSIDs ===');
+    // Step 6: Process each SSID
+    console.log('\n=== Step 6: Configuring SSIDs ===');
 
     // Track which interfaces have been used for each band
     const bandUsage = {
@@ -379,11 +533,19 @@ async function configureMikroTik(config = {}) {
           // Create virtual interface if needed
           if (isVirtual) {
             try {
-              await mt.exec(
-                `/interface/wifi add ` +
-                `master-interface=[find default-name=${masterInterface}] ` +
-                `name="${wifiInterface}"`
-              );
+              if (wifiPackage === 'wifiwave2') {
+                await mt.exec(
+                  `${wifiPath} add ` +
+                  `master-interface=[find name=${masterInterface}] ` +
+                  `name="${wifiInterface}"`
+                );
+              } else {
+                await mt.exec(
+                  `${wifiPath} add ` +
+                  `master-interface=[find default-name=${masterInterface}] ` +
+                  `name="${wifiInterface}"`
+                );
+              }
               console.log(`  ✓ Created virtual interface ${wifiInterface}`);
             } catch (e) {
               if (e.message.includes('already have') || e.message.includes('exists')) {
@@ -400,7 +562,7 @@ async function configureMikroTik(config = {}) {
           // Try to add datapath, ignore if it already exists
           try {
             await mt.exec(
-              `/interface/wifi/datapath add ` +
+              `${getWifiPath(wifiPackage, 'datapath')} add ` +
               `name="${datapathName}" ` +
               `vlan-id=${vlan} ` +
               `bridge=bridge`
@@ -410,7 +572,7 @@ async function configureMikroTik(config = {}) {
             if (e.message.includes('already have') || e.message.includes('exists')) {
               // Update existing datapath
               await mt.exec(
-                `/interface/wifi/datapath set [find name="${datapathName}"] ` +
+                `${getWifiPath(wifiPackage, 'datapath')} set [find name="${datapathName}"] ` +
                 `vlan-id=${vlan} ` +
                 `bridge=bridge`
               );
@@ -421,9 +583,15 @@ async function configureMikroTik(config = {}) {
           }
 
           // Configure WiFi interface with SSID, security, and datapath
-          const setTarget = isVirtual ? wifiInterface : `[find default-name=${masterInterface}]`;
+          let setTarget;
+          if (isVirtual) {
+            setTarget = wifiInterface;
+          } else {
+            setTarget = wifiPackage === 'wifiwave2' ? `[find name=${masterInterface}]` : `[find default-name=${masterInterface}]`;
+          }
+
           await mt.exec(
-            `/interface/wifi set ${setTarget} ` +
+            `${wifiPath} set ${setTarget} ` +
             `configuration.ssid="${ssid}" ` +
             `datapath="${datapathName}" ` +
             `security.authentication-types=wpa2-psk ` +
@@ -438,14 +606,15 @@ async function configureMikroTik(config = {}) {
       }
     }
 
-    // Step 4.5: Disable master interfaces for bands with no SSIDs
+    // Step 6.5: Disable master interfaces for bands with no SSIDs
     console.log('\n=== Disabling Unused Bands ===');
 
     for (const [band, count] of Object.entries(bandUsage)) {
       if (count === 0) {
         const masterInterface = BAND_TO_INTERFACE[band];
         try {
-          await mt.exec(`/interface/wifi set [find default-name=${masterInterface}] disabled=yes`);
+          const findClause = wifiPackage === 'wifiwave2' ? `[find name=${masterInterface}]` : `[find default-name=${masterInterface}]`;
+          await mt.exec(`${wifiPath} set ${findClause} disabled=yes`);
           console.log(`✓ Disabled ${masterInterface} (${band}) - no SSIDs configured`);
         } catch (e) {
           console.log(`⚠️  Could not disable ${masterInterface}: ${e.message}`);
@@ -453,10 +622,6 @@ async function configureMikroTik(config = {}) {
       }
     }
 
-    // Step 5: Ensure bridge VLAN filtering is DISABLED
-    console.log('\n=== Step 5: Ensuring Bridge VLAN Filtering is Disabled ===');
-    await mt.exec('/interface bridge set bridge vlan-filtering=no');
-    console.log('✓ VLAN filtering is DISABLED (safe for management)');
 
     console.log('\n========================================');
     console.log('✓✓✓ Configuration Complete! ✓✓✓');
