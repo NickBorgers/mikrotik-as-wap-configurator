@@ -279,15 +279,86 @@ async function configureMikroTik(config = {}) {
     // Step 3: Configure Bridge Ports
     console.log('\n=== Step 3: Configuring Bridge Ports ===');
 
-    // Add ether1 to bridge (if not already)
-    try {
-      await mt.exec('/interface bridge port add bridge=bridge interface=ether1');
-      console.log('✓ Added ether1 to bridge');
-    } catch (e) {
-      if (e.message.includes('already have interface')) {
-        console.log('✓ ether1 already in bridge');
-      } else {
-        throw e;
+    // Handle management interfaces (can be simple interfaces or bonds)
+    const mgmtInterfaces = config.managementInterfaces || ['ether1'];
+
+    // Process management interfaces
+    for (const mgmtInterface of mgmtInterfaces) {
+      if (typeof mgmtInterface === 'string') {
+        // Simple interface - add directly to bridge
+        try {
+          await mt.exec(`/interface bridge port add bridge=bridge interface=${mgmtInterface}`);
+          console.log(`✓ Added ${mgmtInterface} to bridge`);
+        } catch (e) {
+          if (e.message.includes('already have interface')) {
+            console.log(`✓ ${mgmtInterface} already in bridge`);
+          } else {
+            throw e;
+          }
+        }
+      } else if (mgmtInterface.bond && Array.isArray(mgmtInterface.bond)) {
+        // LACP bond configuration
+        const bondName = 'bond1';  // Default bond name
+        const bondMembers = mgmtInterface.bond;
+
+        console.log(`\n=== Configuring LACP Bond (${bondName}) ===`);
+
+        // First, remove bond members from bridge if they're already added
+        for (const member of bondMembers) {
+          try {
+            await mt.exec(`/interface bridge port remove [find interface=${member}]`);
+            console.log(`✓ Removed ${member} from bridge (preparing for bond)`);
+          } catch (e) {
+            // Interface might not be in bridge
+          }
+        }
+
+        // Create or update bond interface
+        try {
+          // First check if bond exists
+          const bondCheck = await mt.exec(`/interface bonding print where name=${bondName}`);
+          if (!bondCheck || bondCheck.includes('no such item') || !bondCheck.includes(bondName)) {
+            // Create new bond with LACP (802.3ad mode)
+            await mt.exec(`/interface bonding add name=${bondName} slaves="${bondMembers.join(',')}" mode=802.3ad lacp-rate=30secs transmit-hash-policy=layer-2-and-3`);
+            console.log(`✓ Created LACP bond ${bondName} with members: ${bondMembers.join(', ')}`);
+          } else {
+            // Update existing bond
+            await mt.exec(`/interface bonding set [find name=${bondName}] slaves="${bondMembers.join(',')}" mode=802.3ad lacp-rate=30secs transmit-hash-policy=layer-2-and-3`);
+            console.log(`✓ Updated LACP bond ${bondName} with members: ${bondMembers.join(', ')}`);
+          }
+        } catch (e) {
+          console.log(`⚠️  Bond configuration error: ${e.message}`);
+          // Try alternative approach for existing bonds
+          try {
+            await mt.exec(`/interface bonding remove [find name=${bondName}]`);
+            await mt.exec(`/interface bonding add name=${bondName} slaves="${bondMembers.join(',')}" mode=802.3ad lacp-rate=30secs transmit-hash-policy=layer-2-and-3`);
+            console.log(`✓ Recreated LACP bond ${bondName}`);
+          } catch (e2) {
+            console.log(`✗ Failed to configure bond: ${e2.message}`);
+          }
+        }
+
+        // Add bond to bridge
+        try {
+          await mt.exec(`/interface bridge port add bridge=bridge interface=${bondName}`);
+          console.log(`✓ Added ${bondName} to bridge`);
+        } catch (e) {
+          if (e.message.includes('already have interface')) {
+            console.log(`✓ ${bondName} already in bridge`);
+          } else {
+            console.log(`⚠️  Could not add bond to bridge: ${e.message}`);
+          }
+        }
+
+        // Enable all bond member interfaces
+        for (const member of bondMembers) {
+          try {
+            await mt.exec(`/interface ethernet set [find default-name=${member}] disabled=no`);
+            console.log(`✓ Enabled ${member} for bonding`);
+          } catch (e) {
+            console.log(`⚠️  Could not enable ${member}: ${e.message}`);
+          }
+        }
       }
     }
 
@@ -754,8 +825,17 @@ async function configureMikroTik(config = {}) {
     console.log('✓✓✓ Configuration Complete! ✓✓✓');
     console.log('========================================');
 
-    const mgmtInterfaces = config.managementInterfaces || ['ether1'];
-    console.log(`\nManagement Access: ${mgmtInterfaces.join(', ')}`);
+    // Format management interfaces for display
+    const mgmtDisplay = mgmtInterfaces.map(iface => {
+      if (typeof iface === 'string') {
+        return iface;
+      } else if (iface.bond) {
+        return `bond1 (${iface.bond.join('+')})`;
+      }
+      return 'unknown';
+    });
+
+    console.log(`\nManagement Access: ${mgmtDisplay.join(', ')}`);
 
     if (disabledInterfaces.length > 0) {
       console.log(`Disabled Interfaces: ${disabledInterfaces.join(', ')}`);
@@ -890,19 +970,67 @@ async function backupMikroTikConfig(credentials = {}) {
       console.log(`⚠️  Could not read ethernet interfaces: ${e.message}`);
     }
 
-    // Step 2: Get bridge ports (for management interfaces)
+    // Step 2: Check for LACP bonds first
+    console.log('\n=== Checking for LACP Bonds ===');
+    let bondInterfaces = [];
+    try {
+      const bonds = await mt.exec('/interface bonding print detail without-paging');
+
+      // Parse each bond entry (entries are separated by blank lines or numbers)
+      const bondEntries = bonds.split(/\n\s*\d+\s+/).filter(e => e.trim());
+
+      for (const entry of bondEntries) {
+        // Look for bond configuration in each entry
+        const nameMatch = entry.match(/name="?([^"\s]+)"?/);
+        const slavesMatch = entry.match(/slaves=([^"\s]+)/);
+        const modeMatch = entry.match(/mode=802\.3ad/);  // LACP mode
+
+        if (nameMatch && slavesMatch && modeMatch) {
+          const bondName = nameMatch[1];
+          const slaves = slavesMatch[1].split(',');
+
+          // Check if this bond is in the bridge
+          const bridgeCheck = await mt.exec(`/interface bridge port print where interface=${bondName}`);
+          if (bridgeCheck && !bridgeCheck.includes('no such item') && bridgeCheck.length > 0) {
+            // Bond is in bridge - add as management interface
+            config.managementInterfaces.push({
+              bond: slaves
+            });
+            bondInterfaces = bondInterfaces.concat(slaves);
+            console.log(`✓ Found LACP bond ${bondName} with members: ${slaves.join(', ')}`);
+          }
+        }
+      }
+    } catch (e) {
+      console.log(`  No LACP bonds found or error reading: ${e.message}`);
+    }
+
+    // Step 3: Get bridge ports (for non-bonded management interfaces)
     console.log('\n=== Reading Bridge Ports ===');
     try {
       const bridgePorts = await mt.exec('/interface bridge port print detail without-paging');
       const lines = bridgePorts.split('\n');
 
       for (const line of lines) {
-        const ifaceMatch = line.match(/interface=(ether\d+)/);
+        const ifaceMatch = line.match(/interface=(ether\d+|bond\d+)/);
         if (ifaceMatch) {
           const ifaceName = ifaceMatch[1];
+
+          // Skip if it's a bond (already handled)
+          if (ifaceName.startsWith('bond')) {
+            continue;
+          }
+
+          // Skip if it's part of a bond
+          if (bondInterfaces.includes(ifaceName)) {
+            console.log(`  Skipping ${ifaceName} (part of bond)`);
+            continue;
+          }
+
           // Only add to management interfaces if not disabled
           if (!config.disabledInterfaces.includes(ifaceName)) {
-            if (!config.managementInterfaces.includes(ifaceName)) {
+            if (!config.managementInterfaces.find(iface =>
+              typeof iface === 'string' ? iface === ifaceName : false)) {
               config.managementInterfaces.push(ifaceName);
               console.log(`✓ Found bridge port: ${ifaceName}`);
             }

@@ -100,7 +100,18 @@ async function main() {
 
   console.log('\n=== Configuration Summary ===');
   console.log(`Target device: ${mtConfig.host}`);
-  console.log(`Management interfaces: ${mtConfig.managementInterfaces.join(', ')}`);
+
+  // Format management interfaces for display
+  const mgmtDisplay = mtConfig.managementInterfaces.map(iface => {
+    if (typeof iface === 'string') {
+      return iface;
+    } else if (iface.bond) {
+      return `bond (${iface.bond.join('+')})`;
+    }
+    return 'unknown';
+  });
+
+  console.log(`Management interfaces: ${mgmtDisplay.join(', ')}`);
   console.log(`SSIDs to configure: ${config.ssids.length}`);
   config.ssids.forEach(ssid => {
     console.log(`  - ${ssid.ssid}`);
