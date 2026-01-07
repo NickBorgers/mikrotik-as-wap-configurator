@@ -769,6 +769,12 @@ async function configureMikroTik(config = {}) {
     // Step 7: Process each SSID
     console.log('\n=== Step 7: Configuring SSIDs ===');
 
+    // Determine authentication type based on roaming configuration
+    const authTypes = wifiConfig?.roaming?.fastTransition ? 'ft-psk,wpa2-psk' : 'wpa2-psk';
+    if (wifiConfig?.roaming?.fastTransition) {
+      console.log('  ℹ️  Using Fast Transition (802.11r) authentication for seamless roaming');
+    }
+
     // Track which interfaces have been used for each band
     const bandUsage = {
       '2.4GHz': 0,
@@ -877,7 +883,7 @@ async function configureMikroTik(config = {}) {
             `${wifiPath} set ${setTarget} ` +
             `configuration.ssid="${ssid}" ` +
             `datapath="${datapathName}" ` +
-            `security.authentication-types=wpa2-psk ` +
+            `security.authentication-types=${authTypes} ` +
             `security.passphrase="${passphrase}" ` +
             `disabled=no`
           );
@@ -1372,7 +1378,8 @@ async function backupMikroTikConfig(credentials = {}) {
       // Check if any WiFi interface has FT enabled
       let ftEnabled = false;
       for (const iface of interfaces) {
-        if (iface.raw && iface.raw.match(/\.ft=yes/)) {
+        // Check for ft-psk in authentication-types (RouterOS v7 format)
+        if (iface.raw && (iface.raw.match(/authentication-types[=:].*ft-psk/) || iface.raw.match(/\.ft=yes/))) {
           ftEnabled = true;
           break;
         }
