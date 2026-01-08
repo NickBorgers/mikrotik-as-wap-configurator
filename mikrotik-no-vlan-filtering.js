@@ -25,14 +25,19 @@ class MikroTikSSH {
     this.username = username;
     this.password = password;
     this.conn = new Client();
+    this.connected = false;
   }
 
   async connect() {
     return new Promise((resolve, reject) => {
       this.conn.on('ready', () => {
         console.log('✓ Connected to MikroTik device');
+        this.connected = true;
         resolve();
+      }).on('close', () => {
+        this.connected = false;
       }).on('error', (err) => {
+        this.connected = false;
         // Improve error messages for common issues
         if (err.message.includes('All configured authentication methods failed')) {
           reject(new Error(`Authentication failed for user '${this.username}' at ${this.host} - check username and password`));
@@ -61,7 +66,7 @@ class MikroTikSSH {
   async exec(command) {
     return new Promise((resolve, reject) => {
       // Check if connection is still alive
-      if (!this.conn || !this.conn.readable || !this.conn.writable) {
+      if (!this.connected) {
         reject(new Error('Not connected'));
         return;
       }
@@ -97,10 +102,11 @@ class MikroTikSSH {
   }
 
   isConnected() {
-    return this.conn && this.conn.readable && this.conn.writable;
+    return this.connected;
   }
 
   async close() {
+    this.connected = false;
     this.conn.end();
   }
 }
