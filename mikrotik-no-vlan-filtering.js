@@ -621,17 +621,23 @@ async function configureMikroTik(config = {}) {
     let interface24 = 'wifi1';
     let interface5 = 'wifi2';
     try {
-      const wifi1Band = await mt.exec(`${wifiPath} get [find default-name=wifi1] channel.band`);
-      if (wifi1Band && wifi1Band.includes('5ghz')) {
-        // Bands are swapped on this device
+      // First check board name - most reliable way to detect radio layout
+      const resource = await mt.exec('/system resource print');
+      const boardMatch = resource.match(/board-name:\s*([^\n]+)/);
+      const boardName = boardMatch ? boardMatch[1].trim().toLowerCase() : '';
+
+      // Known devices with swapped radios (wifi1=5GHz, wifi2=2.4GHz)
+      const swappedRadioDevices = ['cap ax', 'cap ac'];
+
+      if (swappedRadioDevices.some(d => boardName.includes(d))) {
         interface24 = 'wifi2';
         interface5 = 'wifi1';
-        console.log('ℹ️  Detected swapped radio layout: wifi1=5GHz, wifi2=2.4GHz');
+        console.log(`ℹ️  ${boardMatch[1].trim()}: Swapped radio layout (wifi1=5GHz, wifi2=2.4GHz)`);
       } else {
-        console.log('ℹ️  Standard radio layout: wifi1=2.4GHz, wifi2=5GHz');
+        console.log(`ℹ️  ${boardMatch ? boardMatch[1].trim() : 'Unknown device'}: Standard radio layout (wifi1=2.4GHz, wifi2=5GHz)`);
       }
     } catch (e) {
-      console.log('⚠️  Could not detect band layout, assuming standard: wifi1=2.4GHz, wifi2=5GHz');
+      console.log('⚠️  Could not detect board, assuming standard: wifi1=2.4GHz, wifi2=5GHz');
     }
 
     // Create dynamic band-to-interface mapping based on detected layout
