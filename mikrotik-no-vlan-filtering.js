@@ -622,6 +622,9 @@ async function configureMikroTik(config = {}) {
 
       const commands = [];
 
+      // Ensure correct band is set (prevents issues if GUI changed it)
+      commands.push('channel.band=2ghz-ax');
+
       // Channel configuration
       if (config24.channel !== undefined) {
         // Map channel number to frequency
@@ -675,6 +678,9 @@ async function configureMikroTik(config = {}) {
       console.log('\nConfiguring 5GHz band (wifi2):');
 
       const commands = [];
+
+      // Ensure correct band is set (prevents issues if GUI changed it)
+      commands.push('channel.band=5ghz-ax');
 
       // Channel configuration
       if (config5.channel !== undefined) {
