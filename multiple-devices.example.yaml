@@ -12,7 +12,7 @@
 #   - Use ./diag/optimize-wifi-channels.js to analyze and suggest optimal channels
 
 # Regulatory domain - applies to all devices in the deployment
-country: united_states
+country: United States
 
 devices:
   # First Access Point

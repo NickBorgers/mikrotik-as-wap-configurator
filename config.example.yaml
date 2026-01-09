@@ -19,7 +19,7 @@ disabledInterfaces:
 # Configure channel, power, and roaming settings for optimal performance
 # Especially useful when multiple APs are deployed in close proximity
 wifi:
-  country: united_states    # Regulatory domain (applies to all bands)
+  country: United States    # Regulatory domain (applies to all bands)
 
   # 2.4GHz band settings
   2.4GHz:
