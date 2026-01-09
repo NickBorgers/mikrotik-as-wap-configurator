@@ -615,14 +615,39 @@ async function configureMikroTik(config = {}) {
     const wifiConfig = config.wifi || {};
     const wifiPath = getWifiPath(wifiPackage);
 
+    // Detect which interface is which band (varies by device model)
+    // e.g., wAP ax: wifi1=2.4GHz, wifi2=5GHz
+    //       cAP ax: wifi1=5GHz, wifi2=2.4GHz
+    let interface24 = 'wifi1';
+    let interface5 = 'wifi2';
+    try {
+      const wifi1Band = await mt.exec(`${wifiPath} get [find default-name=wifi1] channel.band`);
+      if (wifi1Band && wifi1Band.includes('5ghz')) {
+        // Bands are swapped on this device
+        interface24 = 'wifi2';
+        interface5 = 'wifi1';
+        console.log('ℹ️  Detected swapped radio layout: wifi1=5GHz, wifi2=2.4GHz');
+      } else {
+        console.log('ℹ️  Standard radio layout: wifi1=2.4GHz, wifi2=5GHz');
+      }
+    } catch (e) {
+      console.log('⚠️  Could not detect band layout, assuming standard: wifi1=2.4GHz, wifi2=5GHz');
+    }
+
+    // Create dynamic band-to-interface mapping based on detected layout
+    const bandToInterface = {
+      '2.4GHz': interface24,
+      '5GHz': interface5
+    };
+
     // Configure 2.4GHz band settings
     if (wifiConfig['2.4GHz']) {
       const config24 = wifiConfig['2.4GHz'];
-      console.log('\nConfiguring 2.4GHz band (wifi1):');
+      console.log(`\nConfiguring 2.4GHz band (${interface24}):`);
 
       const commands = [];
 
-      // Ensure correct band is set (prevents issues if GUI changed it)
+      // Ensure correct band is set
       commands.push('channel.band=2ghz-ax');
 
       // Channel configuration
@@ -663,7 +688,7 @@ async function configureMikroTik(config = {}) {
 
       if (commands.length > 0) {
         try {
-          const findClause = wifiPackage === 'wifiwave2' ? '[find name=wifi1]' : '[find default-name=wifi1]';
+          const findClause = wifiPackage === 'wifiwave2' ? `[find name=${interface24}]` : `[find default-name=${interface24}]`;
           await mt.exec(`${wifiPath} set ${findClause} ${commands.join(' ')}`);
           console.log('  ✓ Applied 2.4GHz band settings');
         } catch (e) {
@@ -675,7 +700,7 @@ async function configureMikroTik(config = {}) {
     // Configure 5GHz band settings
     if (wifiConfig['5GHz']) {
       const config5 = wifiConfig['5GHz'];
-      console.log('\nConfiguring 5GHz band (wifi2):');
+      console.log(`\nConfiguring 5GHz band (${interface5}):`);
 
       const commands = [];
 
@@ -723,7 +748,7 @@ async function configureMikroTik(config = {}) {
 
       if (commands.length > 0) {
         try {
-          const findClause = wifiPackage === 'wifiwave2' ? '[find name=wifi2]' : '[find default-name=wifi2]';
+          const findClause = wifiPackage === 'wifiwave2' ? `[find name=${interface5}]` : `[find default-name=${interface5}]`;
           await mt.exec(`${wifiPath} set ${findClause} ${commands.join(' ')}`);
           console.log('  ✓ Applied 5GHz band settings');
         } catch (e) {
@@ -810,7 +835,7 @@ async function configureMikroTik(config = {}) {
 
       // Configure each band this SSID should broadcast on
       for (const band of bands) {
-        const masterInterface = BAND_TO_INTERFACE[band];
+        const masterInterface = bandToInterface[band];
 
         if (!masterInterface) {
           console.log(`  ⚠️  Unknown band: ${band}, skipping`);
@@ -923,7 +948,7 @@ async function configureMikroTik(config = {}) {
 
     for (const [band, count] of Object.entries(bandUsage)) {
       if (count === 0) {
-        const masterInterface = BAND_TO_INTERFACE[band];
+        const masterInterface = bandToInterface[band];
         try {
           const findClause = wifiPackage === 'wifiwave2' ? `[find name=${masterInterface}]` : `[find default-name=${masterInterface}]`;
           await mt.exec(`${wifiPath} set ${findClause} disabled=yes`);
