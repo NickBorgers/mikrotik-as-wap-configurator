@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.6.2] - 2026-01-09 - Fix WiFi Configuration for wifi-qcom Devices
+
+### Fixed - WiFi-QCOM Package Support (cAP ax and similar devices)
+- **Package detection** - Now correctly identifies wifi-qcom package by checking actual installed package name, not just command availability
+- **Fast Transition auth types** - wifi-qcom uses `security.ft=yes` parameter instead of `ft-psk` auth type
+- **Virtual interface timing** - Added delay after creating virtual interfaces to ensure they register before configuration
+- **Special character escaping** - Fixed passphrase handling for special characters (#, !, ^, %, etc.) in double-quoted strings
+- **Direct interface naming** - Use direct interface names instead of `[find name=...]` for more reliable configuration
+
+### Bug Fix Details
+On devices with `wifi-qcom` package (e.g., cAP ax), both `/interface/wifi` and `/interface/wifiwave2` commands work as aliases. The previous detection logic incorrectly identified these as `wifiwave2` devices, causing:
+1. Wrong authentication type syntax (`ft-psk` is not valid on wifi-qcom)
+2. Virtual interface configurations not persisting
+3. SSIDs not being applied correctly
+
+The fix:
+1. Checks `/system package print` for actual package name (`wifiwave2` vs `wifi-qcom`)
+2. Uses `security.ft=yes` for Fast Transition on wifi-qcom devices
+3. Uses direct interface names for set commands (more reliable than find clauses)
+4. Only escapes characters that need escaping in double-quoted strings (`\`, `"`, `$`)
+
+### Related
+- GitHub Issue: #1
+
 ## [2.6.1] - 2025-10-19 - Fix Old Configuration Persistence
 
 ### Fixed - Band Configuration Cleanup

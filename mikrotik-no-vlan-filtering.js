@@ -123,6 +123,18 @@ function getWifiPath(wifiPackage, command) {
   return command ? `${basePath}/${command}` : basePath;
 }
 
+// Helper to escape special characters in strings for MikroTik RouterOS commands
+// When strings are enclosed in double quotes, most special characters are safe.
+// Only need to escape: \ (backslash), " (quote), and $ (variable expansion)
+function escapeMikroTik(str) {
+  if (!str) return str;
+  return str
+    .replace(/\\/g, '\\\\')  // Backslash first
+    .replace(/"/g, '\\"')    // Double quote
+    .replace(/\$/g, '\\$');  // Dollar sign (variable expansion)
+  // Note: # ! ^ % ? are safe inside double quotes and should NOT be escaped
+}
+
 async function configureMikroTik(config = {}) {
   const mt = new MikroTikSSH(
     config.host || '192.168.88.1',
@@ -457,38 +469,73 @@ async function configureMikroTik(config = {}) {
     // Step 4: Initialize WiFi Interfaces (for fresh devices)
     console.log('\n=== Step 4: Initializing WiFi Interfaces ===');
 
-    // Detect which WiFi package is in use - with retry logic for fresh devices
+    // Detect which WiFi package is in use - check actual installed package first
+    // This is important because wifi-qcom devices respond to both /interface/wifi and /interface/wifiwave2 commands
     let wifiPackage = 'unknown';
     let retries = 3;
 
     while (wifiPackage === 'unknown' && retries > 0) {
       try {
-        // Check for wifiwave2 package (newer chipsets)
-        const wifiwave2Check = await mt.exec('/interface/wifiwave2 print count-only');
-        wifiPackage = 'wifiwave2';
-        console.log('✓ Using WiFiWave2 package (newer chipset)');
-      } catch (e) {
-        try {
-          // Check for wifi/wifi-qcom package (original chipsets)
-          const wifiCheck = await mt.exec('/interface/wifi print count-only');
+        // First, check the actual installed package name - most reliable method
+        const packages = await mt.exec('/system package print terse where name~"wifi"');
+
+        if (packages.includes('wifiwave2')) {
+          wifiPackage = 'wifiwave2';
+          console.log('✓ Using WiFiWave2 package (newer chipset)');
+        } else if (packages.includes('wifi-qcom')) {
           wifiPackage = 'wifi-qcom';
-          console.log('✓ Using WiFi-QCOM package (original chipset)');
-        } catch (e2) {
-          // If both fail, try wireless (very old devices)
+          console.log('✓ Using WiFi-QCOM package (Qualcomm chipset)');
+        } else if (packages.includes('wifi-ax') || packages.includes('wifi ')) {
+          // wifi-ax or generic wifi package
+          wifiPackage = 'wifi-qcom';  // Use same command path as wifi-qcom
+          console.log('✓ Using WiFi package (modern chipset)');
+        } else {
+          // No WiFi package found in list, fall back to command availability
+          throw new Error('No wifi package found, trying command availability');
+        }
+      } catch (e) {
+        // Fallback: check command availability (for older RouterOS versions)
+        try {
+          // Check for wifiwave2 commands
+          const wifiwave2Check = await mt.exec('/interface/wifiwave2 print count-only');
+          // Double-check this isn't actually wifi-qcom aliased
           try {
-            const wirelessCheck = await mt.exec('/interface/wireless print count-only');
-            wifiPackage = 'wireless';
-            console.log('✓ Using Wireless package (legacy)');
-          } catch (e3) {
-            if (retries > 1) {
-              console.log(`⚠️  WiFi package not detected yet, retrying... (${retries - 1} attempts left)`);
-              await new Promise(resolve => setTimeout(resolve, 2000));
-              retries--;
+            const pkgCheck = await mt.exec('/system package print where name=wifiwave2');
+            if (pkgCheck.includes('wifiwave2')) {
+              wifiPackage = 'wifiwave2';
+              console.log('✓ Using WiFiWave2 package (newer chipset)');
             } else {
-              console.log('⚠️  Could not determine WiFi package type after 3 attempts');
-              console.log('    Device may need more time to initialize WiFi subsystem');
-              console.log('    Please re-run the script in a few moments');
-              retries = 0;
+              // Command works but package is different - likely wifi-qcom with aliases
+              wifiPackage = 'wifi-qcom';
+              console.log('✓ Using WiFi-QCOM package (command aliases detected)');
+            }
+          } catch (pkgErr) {
+            wifiPackage = 'wifiwave2';
+            console.log('✓ Using WiFiWave2 package (newer chipset)');
+          }
+        } catch (e2) {
+          try {
+            // Check for wifi/wifi-qcom commands
+            const wifiCheck = await mt.exec('/interface/wifi print count-only');
+            wifiPackage = 'wifi-qcom';
+            console.log('✓ Using WiFi-QCOM package (original chipset)');
+          } catch (e3) {
+            // If both fail, try wireless (very old devices)
+            try {
+              const wirelessCheck = await mt.exec('/interface/wireless print count-only');
+              wifiPackage = 'wireless';
+              console.log('✓ Using Wireless package (legacy)');
+            } catch (e4) {
+              if (retries > 1) {
+                console.log(`⚠️  WiFi package not detected yet, retrying... (${retries - 1} attempts left)`);
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                retries--;
+              } else {
+                console.log('⚠️  Could not determine WiFi package type after 3 attempts');
+                console.log('    Device may need more time to initialize WiFi subsystem');
+                console.log('    Please re-run the script in a few moments');
+                retries = 0;
+              }
             }
           }
         }
@@ -694,8 +741,8 @@ async function configureMikroTik(config = {}) {
 
       if (commands.length > 0) {
         try {
-          const findClause = wifiPackage === 'wifiwave2' ? `[find name=${interface24}]` : `[find default-name=${interface24}]`;
-          await mt.exec(`${wifiPath} set ${findClause} ${commands.join(' ')}`);
+          // Use consistent [find name=...] pattern
+          await mt.exec(`${wifiPath} set [find name="${interface24}"] ${commands.join(' ')}`);
           console.log('  ✓ Applied 2.4GHz band settings');
         } catch (e) {
           console.log(`  ⚠️  Failed to apply 2.4GHz settings: ${e.message}`);
@@ -754,8 +801,8 @@ async function configureMikroTik(config = {}) {
 
       if (commands.length > 0) {
         try {
-          const findClause = wifiPackage === 'wifiwave2' ? `[find name=${interface5}]` : `[find default-name=${interface5}]`;
-          await mt.exec(`${wifiPath} set ${findClause} ${commands.join(' ')}`);
+          // Use consistent [find name=...] pattern
+          await mt.exec(`${wifiPath} set [find name="${interface5}"] ${commands.join(' ')}`);
           console.log('  ✓ Applied 5GHz band settings');
         } catch (e) {
           console.log(`  ⚠️  Failed to apply 5GHz settings: ${e.message}`);
@@ -799,11 +846,8 @@ async function configureMikroTik(config = {}) {
 
       if (roamingCommands.length > 0) {
         try {
-          if (wifiPackage === 'wifiwave2') {
-            await mt.exec(`${wifiPath} set [find name=wifi1],[find name=wifi2] ${roamingCommands.join(' ')}`);
-          } else {
-            await mt.exec(`${wifiPath} set [find default-name=wifi1],[find default-name=wifi2] ${roamingCommands.join(' ')}`);
-          }
+          // Use consistent [find name=...] pattern with actual interface names
+          await mt.exec(`${wifiPath} set [find name="${interface24}"],[find name="${interface5}"] ${roamingCommands.join(' ')}`);
           console.log('  ✓ Applied roaming settings to all WiFi interfaces');
         } catch (e) {
           console.log(`  ⚠️  Failed to apply roaming settings: ${e.message}`);
@@ -814,10 +858,25 @@ async function configureMikroTik(config = {}) {
     // Step 7: Process each SSID
     console.log('\n=== Step 7: Configuring SSIDs ===');
 
-    // Determine authentication type based on roaming configuration
-    const authTypes = wifiConfig?.roaming?.fastTransition ? 'ft-psk,wpa2-psk' : 'wpa2-psk';
-    if (wifiConfig?.roaming?.fastTransition) {
-      console.log('  ℹ️  Using Fast Transition (802.11r) authentication for seamless roaming');
+    // Determine authentication type based on roaming configuration and package type
+    // wifi-qcom uses security.ft=yes, wifiwave2 uses ft-psk auth type
+    const useFastTransition = wifiConfig?.roaming?.fastTransition;
+    let authTypes;
+    let ftParam;
+    if (wifiPackage === 'wifi-qcom') {
+      // wifi-qcom doesn't support ft-psk auth type, use security.ft=yes instead
+      authTypes = 'wpa2-psk';
+      ftParam = useFastTransition ? 'security.ft=yes' : '';
+      if (useFastTransition) {
+        console.log('  ℹ️  Using Fast Transition (802.11r) via security.ft=yes for wifi-qcom');
+      }
+    } else {
+      // wifiwave2 uses ft-psk auth type
+      authTypes = useFastTransition ? 'ft-psk,wpa2-psk' : 'wpa2-psk';
+      ftParam = '';
+      if (useFastTransition) {
+        console.log('  ℹ️  Using Fast Transition (802.11r) authentication for seamless roaming');
+      }
     }
 
     // Track which interfaces have been used for each band
@@ -867,20 +926,15 @@ async function configureMikroTik(config = {}) {
           // Create virtual interface if needed
           if (isVirtual) {
             try {
-              if (wifiPackage === 'wifiwave2') {
-                await mt.exec(
-                  `${wifiPath} add ` +
-                  `master-interface=[find name=${masterInterface}] ` +
-                  `name="${wifiInterface}"`
-                );
-              } else {
-                await mt.exec(
-                  `${wifiPath} add ` +
-                  `master-interface=[find default-name=${masterInterface}] ` +
-                  `name="${wifiInterface}"`
-                );
-              }
+              // Use consistent [find name=...] pattern for master-interface
+              await mt.exec(
+                `${wifiPath} add ` +
+                `master-interface=[find name="${masterInterface}"] ` +
+                `name="${wifiInterface}"`
+              );
               console.log(`  ✓ Created virtual interface ${wifiInterface}`);
+              // Small delay to ensure interface is fully registered
+              await new Promise(resolve => setTimeout(resolve, 500));
             } catch (e) {
               if (e.message.includes('already have') || e.message.includes('exists')) {
                 console.log(`  ✓ Virtual interface ${wifiInterface} already exists`);
@@ -917,21 +971,33 @@ async function configureMikroTik(config = {}) {
           }
 
           // Configure WiFi interface with SSID, security, and datapath
-          let setTarget;
-          if (isVirtual) {
-            setTarget = wifiInterface;
-          } else {
-            setTarget = wifiPackage === 'wifiwave2' ? `[find name=${masterInterface}]` : `[find default-name=${masterInterface}]`;
-          }
+          // Use direct interface name - [find name=...] doesn't work reliably for newly created virtual interfaces
+          // Escape special characters in passphrase for MikroTik
+          const escapedPassphrase = escapeMikroTik(passphrase);
+          const escapedSsid = escapeMikroTik(ssid);
 
-          await mt.exec(
-            `${wifiPath} set ${setTarget} ` +
-            `configuration.ssid="${ssid}" ` +
+          const setCmd =
+            `${wifiPath} set ${wifiInterface} ` +
+            `configuration.ssid="${escapedSsid}" ` +
             `datapath="${datapathName}" ` +
             `security.authentication-types=${authTypes} ` +
-            `security.passphrase="${passphrase}" ` +
-            `disabled=no`
-          );
+            (ftParam ? `${ftParam} ` : '') +
+            `security.passphrase="${escapedPassphrase}" ` +
+            `disabled=no`;
+
+          const setResult = await mt.exec(setCmd);
+          if (setResult.trim()) {
+            console.log(`    Set command output: ${setResult.trim()}`);
+          }
+
+          // Verify configuration was actually applied
+          const verifyResult = await mt.exec(`${wifiPath} print terse where name="${wifiInterface}"`);
+          if (!verifyResult.includes(`configuration.ssid=${ssid}`) && !verifyResult.includes(`.ssid=${ssid}`)) {
+            console.log(`  ⚠️  SSID may not have been applied to ${wifiInterface}, checking actual state...`);
+            // Print full interface state for debugging
+            const fullState = await mt.exec(`${wifiPath} print where name="${wifiInterface}"`);
+            console.log(`    Interface state: ${fullState.trim().substring(0, 200)}`);
+          }
 
           console.log(`  ✓ ${wifiInterface} (${band}) configured with VLAN ${vlan} tagging`);
         } catch (e) {
@@ -956,8 +1022,8 @@ async function configureMikroTik(config = {}) {
       if (count === 0) {
         const masterInterface = bandToInterface[band];
         try {
-          const findClause = wifiPackage === 'wifiwave2' ? `[find name=${masterInterface}]` : `[find default-name=${masterInterface}]`;
-          await mt.exec(`${wifiPath} set ${findClause} disabled=yes`);
+          // Use consistent [find name=...] pattern
+          await mt.exec(`${wifiPath} set [find name="${masterInterface}"] disabled=yes`);
           console.log(`✓ Disabled ${masterInterface} (${band}) - no SSIDs configured`);
         } catch (e) {
           console.log(`⚠️  Could not disable ${masterInterface}: ${e.message}`);
