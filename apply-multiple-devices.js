@@ -90,7 +90,12 @@ async function main() {
   }
 
   const devices = config.devices;
-  console.log(`Found ${devices.length} device(s) to configure\n`);
+  const deploymentCountry = config.country;  // Top-level country for all devices
+  console.log(`Found ${devices.length} device(s) to configure`);
+  if (deploymentCountry) {
+    console.log(`Country: ${deploymentCountry} (applies to all devices)`);
+  }
+  console.log('');
 
   // Validate all devices first
   console.log('Validating configurations...');
@@ -119,6 +124,14 @@ async function main() {
     console.log('Applying configurations in parallel...\n');
 
     const promises = devices.map(async (deviceConfig, index) => {
+      // Merge deployment-level country into device wifi config
+      let wifi = deviceConfig.wifi;
+      if (deploymentCountry && wifi && !wifi.country) {
+        wifi = { ...wifi, country: deploymentCountry };
+      } else if (deploymentCountry && !wifi) {
+        wifi = { country: deploymentCountry };
+      }
+
       const mtConfig = {
         host: deviceConfig.device.host,
         username: deviceConfig.device.username,
@@ -126,7 +139,7 @@ async function main() {
         identity: deviceConfig.identity,  // Optional explicit identity override
         managementInterfaces: deviceConfig.managementInterfaces || ['ether1'],
         disabledInterfaces: deviceConfig.disabledInterfaces || [],
-        wifi: deviceConfig.wifi,  // WiFi optimization settings
+        wifi,  // WiFi optimization settings (with deployment country merged)
         ssids: deviceConfig.ssids
       };
 
@@ -146,6 +159,15 @@ async function main() {
 
     for (let i = 0; i < devices.length; i++) {
       const deviceConfig = devices[i];
+
+      // Merge deployment-level country into device wifi config
+      let wifi = deviceConfig.wifi;
+      if (deploymentCountry && wifi && !wifi.country) {
+        wifi = { ...wifi, country: deploymentCountry };
+      } else if (deploymentCountry && !wifi) {
+        wifi = { country: deploymentCountry };
+      }
+
       const mtConfig = {
         host: deviceConfig.device.host,
         username: deviceConfig.device.username,
@@ -153,7 +175,7 @@ async function main() {
         identity: deviceConfig.identity,  // Optional explicit identity override
         managementInterfaces: deviceConfig.managementInterfaces || ['ether1'],
         disabledInterfaces: deviceConfig.disabledInterfaces || [],
-        wifi: deviceConfig.wifi,  // WiFi optimization settings
+        wifi,  // WiFi optimization settings (with deployment country merged)
         ssids: deviceConfig.ssids
       };
 

@@ -645,10 +645,11 @@ async function configureMikroTik(config = {}) {
         console.log(`  ✓ TX Power ${config24.txPower} dBm`);
       }
 
-      // Country
-      if (config24.country) {
-        commands.push(`configuration.country="${config24.country}"`);
-        console.log(`  ✓ Country ${config24.country}`);
+      // Country (per-band or wifi-level)
+      const country24 = config24.country || wifiConfig.country;
+      if (country24) {
+        commands.push(`configuration.country="${country24}"`);
+        console.log(`  ✓ Country ${country24}`);
       }
 
       // Channel Width
@@ -701,10 +702,11 @@ async function configureMikroTik(config = {}) {
         console.log(`  ✓ TX Power ${config5.txPower} dBm`);
       }
 
-      // Country
-      if (config5.country) {
-        commands.push(`configuration.country="${config5.country}"`);
-        console.log(`  ✓ Country ${config5.country}`);
+      // Country (per-band or wifi-level)
+      const country5 = config5.country || wifiConfig.country;
+      if (country5) {
+        commands.push(`configuration.country="${country5}"`);
+        console.log(`  ✓ Country ${country5}`);
       }
 
       // Channel Width
@@ -1236,6 +1238,26 @@ async function backupMikroTikConfig(credentials = {}) {
       if (widthMatch5) {
         config.wifi['5GHz'].width = widthMatch5[1];
         console.log(`✓ 5GHz Width: ${widthMatch5[1]}`);
+      }
+
+      // Promote country to wifi level if both bands have the same country
+      const country24 = config.wifi['2.4GHz']?.country;
+      const country5 = config.wifi['5GHz']?.country;
+      if (country24 && country5 && country24 === country5) {
+        config.wifi.country = country24;
+        delete config.wifi['2.4GHz'].country;
+        delete config.wifi['5GHz'].country;
+        console.log(`✓ Country promoted to wifi level: ${country24}`);
+      } else if (country24 && !country5) {
+        // Only 2.4GHz has country, promote it
+        config.wifi.country = country24;
+        delete config.wifi['2.4GHz'].country;
+        console.log(`✓ Country promoted to wifi level: ${country24}`);
+      } else if (country5 && !country24) {
+        // Only 5GHz has country, promote it
+        config.wifi.country = country5;
+        delete config.wifi['5GHz'].country;
+        console.log(`✓ Country promoted to wifi level: ${country5}`);
       }
 
       // Clean up empty wifi band configs

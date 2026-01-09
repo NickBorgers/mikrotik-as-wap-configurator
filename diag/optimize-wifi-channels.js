@@ -348,19 +348,37 @@ async function main() {
       if (info.currentSettings?.['2.4GHz']?.txPower && !device.wifi['2.4GHz'].txPower) {
         device.wifi['2.4GHz'].txPower = info.currentSettings['2.4GHz'].txPower;
       }
-      if (info.currentSettings?.['2.4GHz']?.country && !device.wifi['2.4GHz'].country) {
-        device.wifi['2.4GHz'].country = info.currentSettings['2.4GHz'].country;
-      }
 
       if (info.currentSettings?.['5GHz']?.txPower && !device.wifi['5GHz'].txPower) {
         device.wifi['5GHz'].txPower = info.currentSettings['5GHz'].txPower;
       }
-      if (info.currentSettings?.['5GHz']?.country && !device.wifi['5GHz'].country) {
-        device.wifi['5GHz'].country = info.currentSettings['5GHz'].country;
+
+      // Preserve country at wifi level (not per-band)
+      const country = info.currentSettings?.country ||
+                      info.currentSettings?.['2.4GHz']?.country ||
+                      info.currentSettings?.['5GHz']?.country;
+      if (country && !device.wifi.country) {
+        device.wifi.country = country;
       }
 
       console.log(`✓ Updated ${info.host} with suggested channels`);
     });
+
+    // Extract country to top level if consistent across all devices
+    const countries = devices
+      .map(d => d.wifi?.country)
+      .filter(c => c);
+
+    if (countries.length > 0 && countries.every(c => c === countries[0])) {
+      devicesData.country = countries[0];
+      // Remove country from individual device configs
+      devices.forEach(d => {
+        if (d.wifi?.country) {
+          delete d.wifi.country;
+        }
+      });
+      console.log(`✓ Country promoted to deployment level: ${devicesData.country}`);
+    }
 
     // Write to file
     const header = `# MikroTik Multi-Device Configuration

@@ -162,6 +162,32 @@ async function main() {
   console.log('Writing backup file...');
   console.log(`${'='.repeat(60)}\n`);
 
+  // Extract country to top level if consistent across all devices
+  const countries = results.devices
+    .map(d => d.wifi?.country)
+    .filter(c => c);
+
+  let deploymentCountry = null;
+  if (countries.length > 0 && countries.every(c => c === countries[0])) {
+    deploymentCountry = countries[0];
+    // Remove country from individual device configs
+    results.devices.forEach(d => {
+      if (d.wifi?.country) {
+        delete d.wifi.country;
+        // Clean up wifi object if empty
+        if (Object.keys(d.wifi).length === 0) {
+          delete d.wifi;
+        }
+      }
+    });
+    console.log(`✓ Country promoted to deployment level: ${deploymentCountry}`);
+  }
+
+  // Add country at top level if found
+  if (deploymentCountry) {
+    results.country = deploymentCountry;
+  }
+
   const header = `# MikroTik Multi-Device Configuration
 # Last updated: ${new Date().toISOString()}
 # Devices: ${devices.length} (Successful: ${successCount}, Failed: ${failureCount})
