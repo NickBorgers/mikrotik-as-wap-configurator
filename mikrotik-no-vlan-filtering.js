@@ -117,6 +117,28 @@ const BAND_TO_INTERFACE = {
   '5GHz': 'wifi2'
 };
 
+// Channel to frequency maps (avoid duplication)
+const CHANNEL_FREQ_24GHZ = {
+  1: 2412, 2: 2417, 3: 2422, 4: 2427, 5: 2432, 6: 2437,
+  7: 2442, 8: 2447, 9: 2452, 10: 2457, 11: 2462, 12: 2467, 13: 2472
+};
+
+const CHANNEL_FREQ_5GHZ = {
+  36: 5180, 40: 5200, 44: 5220, 48: 5240,
+  52: 5260, 56: 5280, 60: 5300, 64: 5320,
+  100: 5500, 104: 5520, 108: 5540, 112: 5560, 116: 5580, 120: 5600, 124: 5620, 128: 5640,
+  132: 5660, 136: 5680, 140: 5700, 144: 5720,
+  149: 5745, 153: 5765, 157: 5785, 161: 5805, 165: 5825
+};
+
+// Inverse maps for backup (frequency -> channel)
+const FREQ_CHANNEL_24GHZ = Object.fromEntries(
+  Object.entries(CHANNEL_FREQ_24GHZ).map(([k, v]) => [v, parseInt(k)])
+);
+const FREQ_CHANNEL_5GHZ = Object.fromEntries(
+  Object.entries(CHANNEL_FREQ_5GHZ).map(([k, v]) => [v, parseInt(k)])
+);
+
 // Helper to get correct WiFi command path based on package type
 function getWifiPath(wifiPackage, command) {
   const basePath = wifiPackage === 'wifiwave2' ? '/interface/wifiwave2' : '/interface/wifi';
@@ -469,14 +491,14 @@ async function configureMikroTik(config = {}) {
     // Step 4: Initialize WiFi Interfaces (for fresh devices)
     console.log('\n=== Step 4: Initializing WiFi Interfaces ===');
 
-    // Detect which WiFi package is in use - check actual installed package first
-    // This is important because wifi-qcom devices respond to both /interface/wifi and /interface/wifiwave2 commands
+    // Detect which WiFi package is in use by checking installed packages
+    // This is reliable because wifi-qcom devices respond to both /interface/wifi and /interface/wifiwave2
+    // so we must check the actual package name, not command availability
     let wifiPackage = 'unknown';
-    let retries = 3;
+    const MAX_RETRIES = 3;
 
-    while (wifiPackage === 'unknown' && retries > 0) {
+    for (let retry = 0; retry < MAX_RETRIES && wifiPackage === 'unknown'; retry++) {
       try {
-        // First, check the actual installed package name - most reliable method
         const packages = await mt.exec('/system package print terse where name~"wifi"');
 
         if (packages.includes('wifiwave2')) {
@@ -486,60 +508,35 @@ async function configureMikroTik(config = {}) {
           wifiPackage = 'wifi-qcom';
           console.log('✓ Using WiFi-QCOM package (Qualcomm chipset)');
         } else if (packages.includes('wifi-ax') || packages.includes('wifi ')) {
-          // wifi-ax or generic wifi package
-          wifiPackage = 'wifi-qcom';  // Use same command path as wifi-qcom
+          wifiPackage = 'wifi-qcom';  // Same command path as wifi-qcom
           console.log('✓ Using WiFi package (modern chipset)');
         } else {
-          // No WiFi package found in list, fall back to command availability
-          throw new Error('No wifi package found, trying command availability');
+          // Check for legacy wireless package (very old devices)
+          try {
+            await mt.exec('/interface/wireless print count-only');
+            wifiPackage = 'wireless';
+            console.log('✓ Using Wireless package (legacy)');
+          } catch (wirelessErr) {
+            // No WiFi package found yet
+            if (retry < MAX_RETRIES - 1) {
+              console.log(`⚠️  WiFi package not detected, retrying... (${MAX_RETRIES - retry - 1} left)`);
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+          }
         }
       } catch (e) {
-        // Fallback: check command availability (for older RouterOS versions)
-        try {
-          // Check for wifiwave2 commands
-          const wifiwave2Check = await mt.exec('/interface/wifiwave2 print count-only');
-          // Double-check this isn't actually wifi-qcom aliased
-          try {
-            const pkgCheck = await mt.exec('/system package print where name=wifiwave2');
-            if (pkgCheck.includes('wifiwave2')) {
-              wifiPackage = 'wifiwave2';
-              console.log('✓ Using WiFiWave2 package (newer chipset)');
-            } else {
-              // Command works but package is different - likely wifi-qcom with aliases
-              wifiPackage = 'wifi-qcom';
-              console.log('✓ Using WiFi-QCOM package (command aliases detected)');
-            }
-          } catch (pkgErr) {
-            wifiPackage = 'wifiwave2';
-            console.log('✓ Using WiFiWave2 package (newer chipset)');
-          }
-        } catch (e2) {
-          try {
-            // Check for wifi/wifi-qcom commands
-            const wifiCheck = await mt.exec('/interface/wifi print count-only');
-            wifiPackage = 'wifi-qcom';
-            console.log('✓ Using WiFi-QCOM package (original chipset)');
-          } catch (e3) {
-            // If both fail, try wireless (very old devices)
-            try {
-              const wirelessCheck = await mt.exec('/interface/wireless print count-only');
-              wifiPackage = 'wireless';
-              console.log('✓ Using Wireless package (legacy)');
-            } catch (e4) {
-              if (retries > 1) {
-                console.log(`⚠️  WiFi package not detected yet, retrying... (${retries - 1} attempts left)`);
-                await new Promise(resolve => setTimeout(resolve, 2000));
-                retries--;
-              } else {
-                console.log('⚠️  Could not determine WiFi package type after 3 attempts');
-                console.log('    Device may need more time to initialize WiFi subsystem');
-                console.log('    Please re-run the script in a few moments');
-                retries = 0;
-              }
-            }
-          }
+        // Package query failed - device may still be initializing
+        if (retry < MAX_RETRIES - 1) {
+          console.log(`⚠️  WiFi subsystem not ready, retrying... (${MAX_RETRIES - retry - 1} left)`);
+          await new Promise(resolve => setTimeout(resolve, 2000));
         }
       }
+    }
+
+    if (wifiPackage === 'unknown') {
+      console.log('⚠️  Could not determine WiFi package type after 3 attempts');
+      console.log('    Device may need more time to initialize WiFi subsystem');
+      console.log('    Please re-run the script in a few moments');
     }
 
     // Store the WiFi command prefix based on package
@@ -705,12 +702,7 @@ async function configureMikroTik(config = {}) {
 
       // Channel configuration
       if (config24.channel !== undefined) {
-        // Map channel number to frequency
-        const channelFreqMap = {
-          1: 2412, 2: 2417, 3: 2422, 4: 2427, 5: 2432, 6: 2437,
-          7: 2442, 8: 2447, 9: 2452, 10: 2457, 11: 2462, 12: 2467, 13: 2472
-        };
-        const freq = channelFreqMap[config24.channel];
+        const freq = CHANNEL_FREQ_24GHZ[config24.channel];
         if (freq) {
           commands.push(`channel.frequency=${freq}`);
           console.log(`  ✓ Channel ${config24.channel} (${freq} MHz)`);
@@ -741,8 +733,7 @@ async function configureMikroTik(config = {}) {
 
       if (commands.length > 0) {
         try {
-          // Use consistent [find name=...] pattern
-          await mt.exec(`${wifiPath} set [find name="${interface24}"] ${commands.join(' ')}`);
+          await mt.exec(`${wifiPath} set ${interface24} ${commands.join(' ')}`);
           console.log('  ✓ Applied 2.4GHz band settings');
         } catch (e) {
           console.log(`  ⚠️  Failed to apply 2.4GHz settings: ${e.message}`);
@@ -762,15 +753,7 @@ async function configureMikroTik(config = {}) {
 
       // Channel configuration
       if (config5.channel !== undefined) {
-        // Map channel number to frequency for 5GHz
-        const channelFreqMap = {
-          36: 5180, 40: 5200, 44: 5220, 48: 5240,
-          52: 5260, 56: 5280, 60: 5300, 64: 5320,
-          100: 5500, 104: 5520, 108: 5540, 112: 5560, 116: 5580, 120: 5600, 124: 5620, 128: 5640,
-          132: 5660, 136: 5680, 140: 5700, 144: 5720,
-          149: 5745, 153: 5765, 157: 5785, 161: 5805, 165: 5825
-        };
-        const freq = channelFreqMap[config5.channel];
+        const freq = CHANNEL_FREQ_5GHZ[config5.channel];
         if (freq) {
           commands.push(`channel.frequency=${freq}`);
           console.log(`  ✓ Channel ${config5.channel} (${freq} MHz)`);
@@ -801,8 +784,7 @@ async function configureMikroTik(config = {}) {
 
       if (commands.length > 0) {
         try {
-          // Use consistent [find name=...] pattern
-          await mt.exec(`${wifiPath} set [find name="${interface5}"] ${commands.join(' ')}`);
+          await mt.exec(`${wifiPath} set ${interface5} ${commands.join(' ')}`);
           console.log('  ✓ Applied 5GHz band settings');
         } catch (e) {
           console.log(`  ⚠️  Failed to apply 5GHz settings: ${e.message}`);
@@ -846,8 +828,7 @@ async function configureMikroTik(config = {}) {
 
       if (roamingCommands.length > 0) {
         try {
-          // Use consistent [find name=...] pattern with actual interface names
-          await mt.exec(`${wifiPath} set [find name="${interface24}"],[find name="${interface5}"] ${roamingCommands.join(' ')}`);
+          await mt.exec(`${wifiPath} set ${interface24},${interface5} ${roamingCommands.join(' ')}`);
           console.log('  ✓ Applied roaming settings to all WiFi interfaces');
         } catch (e) {
           console.log(`  ⚠️  Failed to apply roaming settings: ${e.message}`);
@@ -926,10 +907,9 @@ async function configureMikroTik(config = {}) {
           // Create virtual interface if needed
           if (isVirtual) {
             try {
-              // Use consistent [find name=...] pattern for master-interface
               await mt.exec(
                 `${wifiPath} add ` +
-                `master-interface=[find name="${masterInterface}"] ` +
+                `master-interface=${masterInterface} ` +
                 `name="${wifiInterface}"`
               );
               console.log(`  ✓ Created virtual interface ${wifiInterface}`);
@@ -990,13 +970,15 @@ async function configureMikroTik(config = {}) {
             console.log(`    Set command output: ${setResult.trim()}`);
           }
 
-          // Verify configuration was actually applied
+          // Verify configuration was applied by checking if SSID appears in interface output
           const verifyResult = await mt.exec(`${wifiPath} print terse where name="${wifiInterface}"`);
-          if (!verifyResult.includes(`configuration.ssid=${ssid}`) && !verifyResult.includes(`.ssid=${ssid}`)) {
-            console.log(`  ⚠️  SSID may not have been applied to ${wifiInterface}, checking actual state...`);
-            // Print full interface state for debugging
-            const fullState = await mt.exec(`${wifiPath} print where name="${wifiInterface}"`);
-            console.log(`    Interface state: ${fullState.trim().substring(0, 200)}`);
+          if (!verifyResult.includes(ssid)) {
+            console.log(`  ⚠️  SSID "${ssid}" may not have been applied to ${wifiInterface}`);
+            // Print abbreviated interface state for debugging
+            const truncated = verifyResult.trim().substring(0, 200);
+            if (truncated) {
+              console.log(`    Interface state: ${truncated}...`);
+            }
           }
 
           console.log(`  ✓ ${wifiInterface} (${band}) configured with VLAN ${vlan} tagging`);
@@ -1022,8 +1004,7 @@ async function configureMikroTik(config = {}) {
       if (count === 0) {
         const masterInterface = bandToInterface[band];
         try {
-          // Use consistent [find name=...] pattern
-          await mt.exec(`${wifiPath} set [find name="${masterInterface}"] disabled=yes`);
+          await mt.exec(`${wifiPath} set ${masterInterface} disabled=yes`);
           console.log(`✓ Disabled ${masterInterface} (${band}) - no SSIDs configured`);
         } catch (e) {
           console.log(`⚠️  Could not disable ${masterInterface}: ${e.message}`);
@@ -1271,12 +1252,7 @@ async function backupMikroTikConfig(credentials = {}) {
 
       if (channelFreqMatch24) {
         const freq = parseInt(channelFreqMatch24[1]);
-        // Map frequency back to channel
-        const freqChannelMap = {
-          2412: 1, 2417: 2, 2422: 3, 2427: 4, 2432: 5, 2437: 6,
-          2442: 7, 2447: 8, 2452: 9, 2457: 10, 2462: 11, 2467: 12, 2472: 13
-        };
-        const channel = freqChannelMap[freq];
+        const channel = FREQ_CHANNEL_24GHZ[freq];
         if (channel) {
           config.wifi['2.4GHz'].channel = channel;
           console.log(`✓ 2.4GHz Channel: ${channel} (${freq} MHz)`);
@@ -1310,15 +1286,7 @@ async function backupMikroTikConfig(credentials = {}) {
 
       if (channelFreqMatch5) {
         const freq = parseInt(channelFreqMatch5[1]);
-        // Map frequency back to channel for 5GHz
-        const freqChannelMap = {
-          5180: 36, 5200: 40, 5220: 44, 5240: 48,
-          5260: 52, 5280: 56, 5300: 60, 5320: 64,
-          5500: 100, 5520: 104, 5540: 108, 5560: 112, 5580: 116, 5600: 120, 5620: 124, 5640: 128,
-          5660: 132, 5680: 136, 5700: 140, 5720: 144,
-          5745: 149, 5765: 153, 5785: 157, 5805: 161, 5825: 165
-        };
-        const channel = freqChannelMap[freq];
+        const channel = FREQ_CHANNEL_5GHZ[freq];
         if (channel) {
           config.wifi['5GHz'].channel = channel;
           console.log(`✓ 5GHz Channel: ${channel} (${freq} MHz)`);
