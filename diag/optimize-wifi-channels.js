@@ -46,7 +46,7 @@ async function getCurrentWiFiSettings(host, username, password) {
       const wifi1Output = await mt.exec('/interface wifi print detail without-paging where default-name=wifi1');
       const channelMatch = wifi1Output.match(/configuration\.channel\.frequency=(\d+)/);
       const txPowerMatch = wifi1Output.match(/configuration\.tx-power=(\d+)/);
-      const countryMatch = wifi1Output.match(/configuration\.country="?([^"\s]+)"?/);
+      const countryMatch = wifi1Output.match(/configuration\.country="([^"]+)"/);
 
       if (channelMatch) {
         const freq = parseInt(channelMatch[1]);
@@ -75,7 +75,7 @@ async function getCurrentWiFiSettings(host, username, password) {
       const wifi2Output = await mt.exec('/interface wifi print detail without-paging where default-name=wifi2');
       const channelMatch = wifi2Output.match(/configuration\.channel\.frequency=(\d+)/);
       const txPowerMatch = wifi2Output.match(/configuration\.tx-power=(\d+)/);
-      const countryMatch = wifi2Output.match(/configuration\.country="?([^"\s]+)"?/);
+      const countryMatch = wifi2Output.match(/configuration\.country="([^"]+)"/);
 
       if (channelMatch) {
         const freq = parseInt(channelMatch[1]);

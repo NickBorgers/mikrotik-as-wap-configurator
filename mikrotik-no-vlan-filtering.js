@@ -1247,7 +1247,7 @@ async function backupMikroTikConfig(credentials = {}) {
       const wifi1Output = await mt.exec('/interface wifi print detail without-paging where default-name=wifi1');
       const channelFreqMatch24 = wifi1Output.match(/channel\.frequency=(\d+)/);
       const txPowerMatch24 = wifi1Output.match(/(?:configuration\.)?tx-power=(\d+)/);
-      const countryMatch24 = wifi1Output.match(/(?:configuration\.)?country="?([^"\s]+)"?/);
+      const countryMatch24 = wifi1Output.match(/(?:configuration\.)?country="([^"]+)"/);
       const widthMatch24 = wifi1Output.match(/(?:channel\.)?width=([^\s]+)/);
 
       if (channelFreqMatch24) {
@@ -1281,7 +1281,7 @@ async function backupMikroTikConfig(credentials = {}) {
       const wifi2Output = await mt.exec('/interface wifi print detail without-paging where default-name=wifi2');
       const channelFreqMatch5 = wifi2Output.match(/channel\.frequency=(\d+)/);
       const txPowerMatch5 = wifi2Output.match(/(?:configuration\.)?tx-power=(\d+)/);
-      const countryMatch5 = wifi2Output.match(/(?:configuration\.)?country="?([^"\s]+)"?/);
+      const countryMatch5 = wifi2Output.match(/(?:configuration\.)?country="([^"]+)"/);
       const widthMatch5 = wifi2Output.match(/(?:channel\.)?width=([^\s]+)/);
 
       if (channelFreqMatch5) {
