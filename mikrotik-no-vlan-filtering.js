@@ -973,7 +973,7 @@ async function configureMikroTik(config = {}) {
           const setCmd =
             `${wifiPath} set ${wifiInterface} ` +
             `configuration.ssid="${escapedSsid}" ` +
-            `datapath="${datapathName}" ` +
+            `datapath.bridge=bridge datapath.vlan-id=${vlan} ` +
             `security.authentication-types=${authTypes} ` +
             (ftParam ? `${ftParam} ` : '') +
             `security.passphrase="${escapedPassphrase}" ` +
