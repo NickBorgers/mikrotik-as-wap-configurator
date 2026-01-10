@@ -1,49 +1,63 @@
 # Changelog
 
-## [2.6.2] - 2026-01-09 - Fix WiFi Configuration for wifi-qcom Devices
+## [2.7.0] - 2026-01-10 - Managed WAP Mode, LACP Bonding & Device Identity
 
-### Fixed - WiFi-QCOM Package Support (cAP ax and similar devices)
-- **Package detection** - Now correctly identifies wifi-qcom package by checking actual installed package name, not just command availability
-- **Fast Transition auth types** - wifi-qcom uses `security.ft=yes` parameter instead of `ft-psk` auth type
-- **Virtual interface timing** - Added delay after creating virtual interfaces to ensure they register before configuration
-- **Special character escaping** - Fixed passphrase handling for special characters (#, !, ^, %, etc.) in double-quoted strings
-- **Direct interface naming** - Use direct interface names instead of `[find name=...]` for more reliable configuration
+### Added - Managed WAP Mode
+- **Pure Layer 2 WAP operation** - Device now configured as a proper managed WAP
+- **DHCP client on bridge** - Gets management IP from upstream network automatically
+- **Router functions disabled** - Removes DHCP servers, static IPs, NAT rules, and DNS serving
+- Ensures device operates purely as a VLAN-aware wireless access point
 
-### Bug Fix Details
-On devices with `wifi-qcom` package (e.g., cAP ax), both `/interface/wifi` and `/interface/wifiwave2` commands work as aliases. The previous detection logic incorrectly identified these as `wifiwave2` devices, causing:
-1. Wrong authentication type syntax (`ft-psk` is not valid on wifi-qcom)
-2. Virtual interface configurations not persisting
-3. SSIDs not being applied correctly
+### Added - LACP Bonding Support
+- **Bond management interfaces** - Combine multiple interfaces into LACP bonds (802.3ad)
+- **High availability** - Redundant management connectivity for critical infrastructure
+- **New YAML syntax** - Define bonds in `managementInterfaces` configuration
+- **Backup support** - Bond configurations detected and exported during backup
+- Uses layer-2-and-3 transmit hash policy with 30-second LACP rate
 
-The fix:
-1. Checks `/system package print` for actual package name (`wifiwave2` vs `wifi-qcom`)
-2. Uses `security.ft=yes` for Fast Transition on wifi-qcom devices
-3. Uses direct interface names for set commands (more reliable than find clauses)
-4. Only escapes characters that need escaping in double-quoted strings (`\`, `"`, `$`)
+```yaml
+managementInterfaces:
+  - bond:
+      - ether1
+      - ether2
+```
 
-### Related
-- GitHub Issue: #1
+### Added - Automatic Device Identity
+- **FQDN-based identity** - Automatically extract and set device identity from hostname
+- Example: `indoor-wap-south.nickborgers.net` sets identity to `indoor-wap-south`
+- **Override support** - Identity can be explicitly set in config.yaml
+- **Smart backup** - Only stores identity if it differs from expected hostname
 
-## [2.6.1] - 2025-10-19 - Fix Old Configuration Persistence
+### Added - Deployment-Level Country Configuration
+- **Centralized country setting** - Specify WiFi regulatory country at deployment level
+- Applies to all devices in `multiple-devices.yaml`
+- Maintains backward compatibility with per-band country settings
+- Backup promotes country to deployment level when consistent across devices
 
-### Fixed - Band Configuration Cleanup
-- **Master WiFi interface cleanup** - Fixed issue where old SSIDs persisted when all SSIDs removed from a band
-- **Explicit band disabling** - Master interfaces (wifi1, wifi2) now disabled when no SSIDs configured for that band
-- **Prevents ghost broadcasts** - Ensures devices don't continue broadcasting old configurations after SSID removal
-- Script now tracks band usage and disables unused master interfaces in new Step 4.5
+### Fixed - WiFi-QCOM Package Support (cAP ax)
+- **Package detection** - Correctly identifies wifi-qcom vs wifiwave2 by checking installed package name
+- **Fast Transition auth** - wifi-qcom uses `security.ft=yes` instead of `ft-psk` auth type
+- **Virtual interface timing** - Added delay after creating virtual interfaces
+- **Special character escaping** - Fixed passphrase handling for #, !, ^, %, etc.
+- **Direct interface naming** - Use direct names instead of `[find name=...]` for reliability
 
-### Bug Fix Details
-When removing all SSIDs from a band (e.g., removing all 5GHz SSIDs), the master WiFi interface would remain enabled with its old configuration. This caused devices to continue broadcasting previously configured SSIDs even though they were removed from the YAML configuration.
+### Fixed - Radio Band Detection
+- **Board-based detection** - Uses board name to detect devices with swapped radio layout
+- **Per-model handling** - Correctly identifies which physical radio is 2.4GHz vs 5GHz
+- **Channel band setting** - Explicitly sets channel.band during WiFi optimization
 
-The fix adds a new cleanup step after SSID configuration that:
-1. Checks which bands have zero SSIDs configured
-2. Explicitly disables master interfaces for unused bands
-3. Prevents old configurations from persisting
+### Fixed - Configuration Reliability
+- **Old SSID persistence** - Master interfaces now disabled when no SSIDs configured for band
+- **Fresh device support** - Improved configuration for newly reset devices
+- **SSH connection tracking** - Fixed state tracking for newer ssh2 versions
+- **802.11r Fast Transition** - Fixed authentication for seamless roaming
+- **Country code format** - Uses 'United States' not 'united_states'
+- **Country regex** - Captures country values containing spaces
+- **WiFi interface names** - Reset to defaults for idempotency
 
-### Example Scenario
-**Before**: Device configured with 5GHz SSIDs, then updated to only broadcast 2.4GHz
-- **Problem**: Old 5GHz SSIDs continued broadcasting
-- **Solution**: wifi2 (5GHz master interface) is now disabled when no 5GHz SSIDs are configured
+### Improved
+- **Error messages** - Better feedback for authentication and connection failures
+- **Code simplification** - Streamlined WiFi configuration code
 
 ## [2.6.0] - 2025-10-18 - Channel Width Control and Enhanced Backup
 
