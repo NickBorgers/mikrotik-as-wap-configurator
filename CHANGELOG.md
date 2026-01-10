@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.7.1] - 2026-01-10 - Critical VLAN Tagging Fix
+
+### Fixed
+- **VLAN tagging not applied** - WiFi clients were being placed on the untagged management VLAN instead of their configured VLAN. Root cause: referencing named datapath objects (`datapath="wifi1-vlan100"`) wasn't applying VLAN settings to interfaces. Fix: set `datapath.vlan-id` directly inline on each WiFi interface.
+- **Interface name reset** - Added step to reset WiFi interface names to defaults during cleanup, ensuring idempotency when interfaces have been manually renamed.
+
 ## [2.7.0] - 2026-01-10 - Managed WAP Mode, LACP Bonding & Device Identity
 
 ### Added - Managed WAP Mode
