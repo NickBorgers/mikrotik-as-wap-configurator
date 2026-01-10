@@ -651,6 +651,20 @@ async function configureMikroTik(config = {}) {
           console.log(`⚠️  Warning: Could not remove virtual interfaces: ${e.message}`);
         }
       }
+
+      // Reset master interface names to defaults (ensures idempotency if manually renamed)
+      console.log('\n--- Resetting Interface Names to Defaults ---');
+      for (const defaultName of ['wifi1', 'wifi2']) {
+        try {
+          await mt.exec(`${wifiCmd} set [find default-name=${defaultName}] name=${defaultName}`);
+          console.log(`✓ Reset ${defaultName} to default name`);
+        } catch (e) {
+          // Interface might not exist on single-band devices
+          if (!e.message.includes('no such item') && !e.message.includes('not found')) {
+            console.log(`⚠️  Could not reset ${defaultName}: ${e.message}`);
+          }
+        }
+      }
     }
 
     // Step 6: Configure WiFi Optimization Settings (Channel, Power, Roaming)
