@@ -1,5 +1,36 @@
 # Changelog
 
+## [2.8.0] - 2026-01-12 - Graceful Client Handling During Updates
+
+### Added - Staggered Multi-Device Deployment
+- **Configurable delay between devices** - Default 5-second pause allows WiFi clients to roam to stable APs
+- **`--delay <secs>`** - Set custom delay between devices (e.g., `--delay 10` for 10 seconds)
+- **`--no-delay`** - Skip delays for faster deployment when client disruption is acceptable
+- Delay only applies in sequential mode (not parallel)
+
+### Added - WiFi Client Evacuation
+- **Pre-reconfiguration client disconnect** - Clients are disconnected before interface cleanup begins
+- **2-second roaming window** - Brief pause after disconnect gives clients time to find other APs
+- Clients get a head start reconnecting elsewhere before interfaces are torn down
+- Non-fatal: reconfiguration proceeds even if evacuation fails
+
+### Improved - Client Experience During Fleet Updates
+- Combined staggered deployment + client evacuation minimizes disruption
+- Typical update flow: evacuate clients → reconfigure → wait → next device
+- Clients on 802.11r/k/v networks benefit most from the roaming windows
+
+### Usage
+```bash
+# Default: 5s delay between devices
+./apply-multiple-devices.js multiple-devices.yaml
+
+# Custom delay for slower client roaming
+./apply-multiple-devices.js multiple-devices.yaml --delay 10
+
+# Fast mode (no delays)
+./apply-multiple-devices.js multiple-devices.yaml --no-delay
+```
+
 ## [2.7.1] - 2026-01-10 - Critical VLAN Tagging Fix
 
 ### Fixed
