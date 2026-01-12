@@ -595,6 +595,35 @@ async function configureMikroTik(config = {}) {
       console.log('⚠️  Legacy wireless interfaces detected - manual migration needed');
     }
 
+    // Step 4.5: Evacuate WiFi clients before reconfiguration
+    // This gives clients a head start to find another AP before we tear down interfaces
+    if (wifiPackage !== 'unknown' && wifiPackage !== 'wireless') {
+      console.log('\n=== Step 4.5: Evacuating WiFi Clients ===');
+      try {
+        const regTablePath = wifiPackage === 'wifiwave2'
+          ? '/interface/wifiwave2/registration-table'
+          : '/interface/wifi/registration-table';
+
+        // Check if there are any connected clients
+        const clients = await mt.exec(`${regTablePath} print count-only`);
+        const clientCount = parseInt(clients.trim(), 10) || 0;
+
+        if (clientCount > 0) {
+          console.log(`Found ${clientCount} connected client(s), disconnecting...`);
+          await mt.exec(`${regTablePath} remove [find]`);
+          console.log('✓ Disconnected all WiFi clients (they will reconnect to other APs)');
+          // Brief pause to allow clients to start reconnecting elsewhere
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          console.log('✓ Waited 2s for clients to find other APs');
+        } else {
+          console.log('✓ No WiFi clients connected');
+        }
+      } catch (e) {
+        // Non-fatal - proceed with reconfiguration even if evacuation fails
+        console.log(`⚠️  Could not evacuate clients: ${e.message}`);
+      }
+    }
+
     // Step 5: Clean up old virtual WiFi interfaces and datapaths
     console.log('\n=== Step 5: Cleaning Up Old Configurations ===');
 
