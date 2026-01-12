@@ -61,24 +61,48 @@ async function main() {
     console.log('Usage: node apply-multiple-devices.js <config-file.yaml> [options]');
     console.log('');
     console.log('Options:');
-    console.log('  --parallel    Apply configurations in parallel (faster but less readable output)');
-    console.log('  --sequential  Apply configurations sequentially (default, clearer output)');
+    console.log('  --parallel       Apply configurations in parallel (faster but causes network-wide outage)');
+    console.log('  --sequential     Apply configurations sequentially (default, clearer output)');
+    console.log('  --delay <secs>   Wait between devices for client roaming (default: 5, sequential only)');
+    console.log('  --no-delay       Skip delay between devices');
     console.log('');
     console.log('Examples:');
     console.log('  node apply-multiple-devices.js multiple-devices.yaml');
+    console.log('  node apply-multiple-devices.js multiple-devices.yaml --delay 10');
+    console.log('  node apply-multiple-devices.js multiple-devices.yaml --no-delay');
     console.log('  node apply-multiple-devices.js multiple-devices.yaml --parallel');
     console.log('');
     console.log('The config file should contain a "devices" array with device configurations.');
     console.log('Use backup-multiple-devices.js to generate this file from existing devices.');
+    console.log('');
+    console.log('Note: WiFi clients experience brief disconnection during reconfiguration.');
+    console.log('      The --delay option (default 5s) allows clients to roam between APs.');
     process.exit(1);
   }
 
   const configFile = args[0];
   const parallel = args.includes('--parallel');
+  const noDelay = args.includes('--no-delay');
+
+  // Parse --delay <seconds> option
+  let staggerDelay = 5; // Default 5 seconds
+  const delayIndex = args.indexOf('--delay');
+  if (delayIndex !== -1 && args[delayIndex + 1]) {
+    const parsedDelay = parseInt(args[delayIndex + 1], 10);
+    if (!isNaN(parsedDelay) && parsedDelay >= 0) {
+      staggerDelay = parsedDelay;
+    }
+  }
+  if (noDelay) {
+    staggerDelay = 0;
+  }
 
   console.log('=== MikroTik Multi-Device Configuration ===');
   console.log(`Config file: ${configFile}`);
   console.log(`Mode: ${parallel ? 'parallel' : 'sequential'}`);
+  if (!parallel && staggerDelay > 0) {
+    console.log(`Stagger delay: ${staggerDelay}s between devices (for client roaming)`);
+  }
   console.log('');
 
   console.log(`Loading configuration from: ${configFile}`);
@@ -195,6 +219,13 @@ async function main() {
       } catch (error) {
         results.push({ index: i + 1, host: mtConfig.host, success: false, error: error.message });
         console.error(`\n✗ Failed to configure ${mtConfig.host}: ${error.message}`);
+      }
+
+      // Stagger delay between devices to allow WiFi clients to roam
+      const isLastDevice = i === devices.length - 1;
+      if (!isLastDevice && staggerDelay > 0) {
+        console.log(`\n⏳ Waiting ${staggerDelay}s for WiFi clients to roam before next device...`);
+        await new Promise(resolve => setTimeout(resolve, staggerDelay * 1000));
       }
     }
   }
