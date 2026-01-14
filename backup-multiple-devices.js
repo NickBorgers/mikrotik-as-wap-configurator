@@ -188,6 +188,50 @@ async function main() {
     results.country = deploymentCountry;
   }
 
+  // Extract syslog to top level if consistent across all devices
+  const syslogs = results.devices
+    .map(d => d.syslog)
+    .filter(s => s && s.server);
+
+  let deploymentSyslog = null;
+  if (syslogs.length > 0) {
+    // Check if all syslog configs point to the same server:port
+    const allSame = syslogs.every(s =>
+      s.server === syslogs[0].server &&
+      s.port === syslogs[0].port
+    );
+
+    if (allSame) {
+      // Merge topics from all devices
+      const allTopics = new Set();
+      syslogs.forEach(s => {
+        if (s.topics) {
+          s.topics.forEach(t => allTopics.add(t));
+        }
+      });
+
+      deploymentSyslog = {
+        server: syslogs[0].server,
+        port: syslogs[0].port,
+        topics: Array.from(allTopics)
+      };
+
+      // Remove syslog from individual device configs
+      results.devices.forEach(d => {
+        if (d.syslog) {
+          delete d.syslog;
+        }
+      });
+
+      console.log(`✓ Syslog promoted to deployment level: ${deploymentSyslog.server}:${deploymentSyslog.port}`);
+    }
+  }
+
+  // Add syslog at top level if found
+  if (deploymentSyslog) {
+    results.syslog = deploymentSyslog;
+  }
+
   const header = `# MikroTik Multi-Device Configuration
 # Last updated: ${new Date().toISOString()}
 # Devices: ${devices.length} (Successful: ${successCount}, Failed: ${failureCount})

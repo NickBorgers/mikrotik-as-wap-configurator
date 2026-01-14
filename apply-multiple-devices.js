@@ -115,9 +115,16 @@ async function main() {
 
   const devices = config.devices;
   const deploymentCountry = config.country;  // Top-level country for all devices
+  const deploymentSyslog = config.syslog;    // Top-level syslog for all devices
   console.log(`Found ${devices.length} device(s) to configure`);
   if (deploymentCountry) {
     console.log(`Country: ${deploymentCountry} (applies to all devices)`);
+  }
+  if (deploymentSyslog && deploymentSyslog.server) {
+    console.log(`Syslog: ${deploymentSyslog.server}:${deploymentSyslog.port || 514} (applies to all devices)`);
+    if (deploymentSyslog.topics) {
+      console.log(`  Topics: ${deploymentSyslog.topics.join(', ')}`);
+    }
   }
   console.log('');
 
@@ -164,6 +171,7 @@ async function main() {
         managementInterfaces: deviceConfig.managementInterfaces || ['ether1'],
         disabledInterfaces: deviceConfig.disabledInterfaces || [],
         wifi,  // WiFi optimization settings (with deployment country merged)
+        syslog: deploymentSyslog,  // Syslog configuration (deployment-level)
         ssids: deviceConfig.ssids
       };
 
@@ -200,6 +208,7 @@ async function main() {
         managementInterfaces: deviceConfig.managementInterfaces || ['ether1'],
         disabledInterfaces: deviceConfig.disabledInterfaces || [],
         wifi,  // WiFi optimization settings (with deployment country merged)
+        syslog: deploymentSyslog,  // Syslog configuration (deployment-level)
         ssids: deviceConfig.ssids
       };
 
