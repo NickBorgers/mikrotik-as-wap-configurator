@@ -42,6 +42,13 @@
 - ether2 disabled by default for security (can be re-enabled via config if needed)
 - Upstream switch must handle both untagged management and tagged VLAN traffic on ether1
 
+**LACP Bonding (for redundant uplinks)**
+- LACP bonds (802.3ad) supported for devices with multiple Ethernet ports
+- First interface in the bond list is set as "primary" to ensure consistent MAC address
+- This fixes DHCP static lease issues - bond MAC no longer changes across reboots
+- Requires upstream switch configured for LACP on corresponding ports
+- Example config: `managementInterfaces: [{bond: [ether1, ether2]}]`
+
 **Virtual WiFi Interfaces**
 - MikroTik RouterOS v7 supports virtual WiFi interfaces on same radio
 - Master interfaces: wifi1 (2.4GHz), wifi2 (5GHz)

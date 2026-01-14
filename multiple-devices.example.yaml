@@ -14,6 +14,15 @@
 # Regulatory domain - applies to all devices in the deployment
 country: United States
 
+# Remote syslog configuration - applies to all devices
+# Useful for centralized logging of WiFi client connect/disconnect events
+# to track client roaming between APs
+syslog:
+  server: 10.0.0.100      # Syslog server IP (e.g., Gravwell, Elasticsearch, rsyslog)
+  port: 514               # Syslog port (default: 514)
+  topics:                 # Log topics to send
+    - wireless            # WiFi client connect/disconnect events
+
 devices:
   # First Access Point
   - device:
@@ -144,6 +153,42 @@ devices:
       - ssid: Corporate
         passphrase: corporate-password
         vlan: 50
+        bands:
+          - 2.4GHz
+          - 5GHz
+
+  # Fourth Access Point (LACP bonded uplink for redundancy)
+  # Requires switch support for LACP (802.3ad)
+  - device:
+      host: 192.168.88.4
+      username: admin
+      password: admin
+    managementInterfaces:
+      # LACP bond configuration - combines ether1+ether2 for redundancy
+      # IMPORTANT: First interface in the list is used as "primary" for consistent MAC address
+      # This ensures DHCP static leases work reliably across reboots
+      - bond:
+          - ether1    # Primary - bond will use this interface's MAC address
+          - ether2
+    disabledInterfaces: []
+    wifi:
+      2.4GHz:
+        channel: 1
+        txPower: 15
+        width: 20mhz
+      5GHz:
+        channel: 36
+        txPower: 18
+        width: 20/40/80mhz
+      roaming:
+        enabled: yes
+        neighborReport: yes
+        bssTransition: yes
+        fastTransition: yes
+    ssids:
+      - ssid: MyNetwork
+        passphrase: secure-password-here
+        vlan: 100
         bands:
           - 2.4GHz
           - 5GHz

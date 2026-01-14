@@ -289,20 +289,21 @@ async function configureMikroTik(config = {}) {
           const bondCheck = await mt.exec(`/interface bonding print where name=${bondName}`);
           if (!bondCheck || bondCheck.includes('no such item') || !bondCheck.includes(bondName)) {
             // Create new bond with LACP (802.3ad mode)
-            await mt.exec(`/interface bonding add name=${bondName} slaves="${bondMembers.join(',')}" mode=802.3ad lacp-rate=30secs transmit-hash-policy=layer-2-and-3`);
-            console.log(`✓ Created LACP bond ${bondName} with members: ${bondMembers.join(', ')}`);
+            // Set primary to first slave for consistent MAC address (fixes DHCP static lease issues)
+            await mt.exec(`/interface bonding add name=${bondName} slaves="${bondMembers.join(',')}" mode=802.3ad lacp-rate=30secs transmit-hash-policy=layer-2-and-3 primary=${bondMembers[0]}`);
+            console.log(`✓ Created LACP bond ${bondName} with members: ${bondMembers.join(', ')} (primary: ${bondMembers[0]})`);
           } else {
             // Update existing bond
-            await mt.exec(`/interface bonding set [find name=${bondName}] slaves="${bondMembers.join(',')}" mode=802.3ad lacp-rate=30secs transmit-hash-policy=layer-2-and-3`);
-            console.log(`✓ Updated LACP bond ${bondName} with members: ${bondMembers.join(', ')}`);
+            await mt.exec(`/interface bonding set [find name=${bondName}] slaves="${bondMembers.join(',')}" mode=802.3ad lacp-rate=30secs transmit-hash-policy=layer-2-and-3 primary=${bondMembers[0]}`);
+            console.log(`✓ Updated LACP bond ${bondName} with members: ${bondMembers.join(', ')} (primary: ${bondMembers[0]})`);
           }
         } catch (e) {
           console.log(`⚠️  Bond configuration error: ${e.message}`);
           // Try alternative approach for existing bonds
           try {
             await mt.exec(`/interface bonding remove [find name=${bondName}]`);
-            await mt.exec(`/interface bonding add name=${bondName} slaves="${bondMembers.join(',')}" mode=802.3ad lacp-rate=30secs transmit-hash-policy=layer-2-and-3`);
-            console.log(`✓ Recreated LACP bond ${bondName}`);
+            await mt.exec(`/interface bonding add name=${bondName} slaves="${bondMembers.join(',')}" mode=802.3ad lacp-rate=30secs transmit-hash-policy=layer-2-and-3 primary=${bondMembers[0]}`);
+            console.log(`✓ Recreated LACP bond ${bondName} (primary: ${bondMembers[0]})`);
           } catch (e2) {
             console.log(`✗ Failed to configure bond: ${e2.message}`);
           }
@@ -1055,6 +1056,59 @@ async function configureMikroTik(config = {}) {
       }
     }
 
+    // Step 8: Configure Syslog (if specified)
+    if (config.syslog && config.syslog.server) {
+      console.log('\n=== Step 8: Configuring Remote Syslog ===');
+
+      const syslogServer = config.syslog.server;
+      const syslogPort = config.syslog.port || 514;
+      const syslogTopics = config.syslog.topics || ['wireless'];
+      const syslogActionName = 'remotesyslog';  // MikroTik only allows letters and numbers
+
+      try {
+        // Remove existing remote syslog action if it exists (to ensure idempotency)
+        try {
+          await mt.exec(`/system logging action remove [find name="${syslogActionName}"]`);
+          console.log(`✓ Removed existing syslog action "${syslogActionName}"`);
+        } catch (e) {
+          // Ignore - action might not exist
+        }
+
+        // Remove existing logging rules for our action
+        try {
+          await mt.exec(`/system logging remove [find action="${syslogActionName}"]`);
+          console.log('✓ Removed existing syslog logging rules');
+        } catch (e) {
+          // Ignore - rules might not exist
+        }
+
+        // Create remote syslog action
+        // Note: Using 'default' format because 'syslog' format breaks some syslog receivers
+        // WAP identification should be done via source IP in the receiver
+        await mt.exec(
+          `/system logging action add ` +
+          `name="${syslogActionName}" ` +
+          `target=remote ` +
+          `remote=${syslogServer} ` +
+          `remote-port=${syslogPort}`
+        );
+        console.log(`✓ Created syslog action: ${syslogServer}:${syslogPort}`);
+
+        // Add logging rules for each topic
+        for (const topic of syslogTopics) {
+          await mt.exec(
+            `/system logging add ` +
+            `topics=${topic} ` +
+            `action="${syslogActionName}"`
+          );
+          console.log(`✓ Logging topic "${topic}" to remote syslog`);
+        }
+
+        console.log(`✓ Syslog configured - WiFi events will be sent to ${syslogServer}:${syslogPort}`);
+      } catch (e) {
+        console.log(`⚠️  Could not configure syslog: ${e.message}`);
+      }
+    }
 
     console.log('\n========================================');
     console.log('✓✓✓ Configuration Complete! ✓✓✓');
@@ -1219,10 +1273,17 @@ async function backupMikroTikConfig(credentials = {}) {
         const nameMatch = entry.match(/name="?([^"\s]+)"?/);
         const slavesMatch = entry.match(/slaves=([^"\s]+)/);
         const modeMatch = entry.match(/mode=802\.3ad/);  // LACP mode
+        const primaryMatch = entry.match(/primary=([^"\s]+)/);
 
         if (nameMatch && slavesMatch && modeMatch) {
           const bondName = nameMatch[1];
-          const slaves = slavesMatch[1].split(',');
+          let slaves = slavesMatch[1].split(',');
+          const primary = primaryMatch ? primaryMatch[1] : null;
+
+          // Ensure primary interface is first in the list (for consistent MAC address)
+          if (primary && slaves.includes(primary)) {
+            slaves = [primary, ...slaves.filter(s => s !== primary)];
+          }
 
           // Check if this bond is in the bridge
           const bridgeCheck = await mt.exec(`/interface bridge port print where interface=${bondName}`);
@@ -1232,7 +1293,8 @@ async function backupMikroTikConfig(credentials = {}) {
               bond: slaves
             });
             bondInterfaces = bondInterfaces.concat(slaves);
-            console.log(`✓ Found LACP bond ${bondName} with members: ${slaves.join(', ')}`);
+            const primaryInfo = primary ? ` (primary: ${primary})` : '';
+            console.log(`✓ Found LACP bond ${bondName} with members: ${slaves.join(', ')}${primaryInfo}`);
           }
         }
       }
@@ -1547,6 +1609,45 @@ async function backupMikroTikConfig(credentials = {}) {
 
     } catch (e) {
       console.log(`⚠️  Could not read WiFi configurations: ${e.message}`);
+    }
+
+    // Step 8: Read Syslog Configuration
+    console.log('\n=== Reading Syslog Configuration ===');
+    try {
+      // Look for our remotesyslog action
+      const actionOutput = await mt.exec('/system logging action print detail without-paging where name="remotesyslog"');
+
+      if (actionOutput && actionOutput.includes('remotesyslog')) {
+        // Parse the remote server and port
+        const remoteMatch = actionOutput.match(/remote=([^\s]+)/);
+        const portMatch = actionOutput.match(/remote-port=(\d+)/);
+
+        if (remoteMatch) {
+          config.syslog = {
+            server: remoteMatch[1],
+            port: portMatch ? parseInt(portMatch[1]) : 514,
+            topics: []
+          };
+
+          // Get the topics configured for this action
+          const loggingOutput = await mt.exec('/system logging print detail without-paging where action="remotesyslog"');
+          const topicMatches = loggingOutput.matchAll(/topics=([^\s]+)/g);
+
+          for (const match of topicMatches) {
+            const topic = match[1];
+            if (!config.syslog.topics.includes(topic)) {
+              config.syslog.topics.push(topic);
+            }
+          }
+
+          console.log(`✓ Found syslog configuration: ${config.syslog.server}:${config.syslog.port}`);
+          console.log(`  Topics: ${config.syslog.topics.join(', ')}`);
+        }
+      } else {
+        console.log('  No remote syslog configured');
+      }
+    } catch (e) {
+      console.log(`⚠️  Could not read syslog configuration: ${e.message}`);
     }
 
     console.log('\n========================================');
