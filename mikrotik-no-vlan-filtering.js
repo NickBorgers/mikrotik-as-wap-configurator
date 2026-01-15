@@ -283,23 +283,23 @@ async function configureMikroTik(config = {}) {
           }
         }
 
-        // Get FACTORY MAC address of first interface BEFORE creating bond
-        // Must use factory-mac-address, not mac-address, since current MAC might be
+        // Get ORIGINAL MAC address of first interface BEFORE creating bond
+        // Must use orig-mac-address, not mac-address, since current MAC might be
         // modified by previous bonding configuration
         let primaryMac = null;
         try {
           const ethDetail = await mt.exec(`/interface ethernet print detail where default-name=${bondMembers[0]}`);
-          // Use factory-mac-address to get the original hardware MAC
-          const macMatch = ethDetail.match(/factory-mac-address=([0-9A-Fa-f:]+)/);
+          // Use orig-mac-address to get the original hardware MAC
+          const macMatch = ethDetail.match(/orig-mac-address=([0-9A-Fa-f:]+)/);
           if (macMatch) {
             primaryMac = macMatch[1];
-            console.log(`✓ Using ${bondMembers[0]} factory MAC for bond: ${primaryMac}`);
+            console.log(`✓ Using ${bondMembers[0]} original MAC for bond: ${primaryMac}`);
           } else {
-            // Fallback to mac-address if factory-mac-address not found
+            // Fallback to mac-address if orig-mac-address not found
             const fallbackMatch = ethDetail.match(/mac-address=([0-9A-Fa-f:]+)/);
             if (fallbackMatch) {
               primaryMac = fallbackMatch[1];
-              console.log(`✓ Using ${bondMembers[0]} MAC for bond: ${primaryMac} (factory MAC not found)`);
+              console.log(`✓ Using ${bondMembers[0]} MAC for bond: ${primaryMac} (orig MAC not found)`);
             }
           }
         } catch (e) {
