@@ -1,5 +1,55 @@
 # Changelog
 
+## [3.0.0] - 2026-01-15 - Per-SSID 802.11r Configuration
+
+### Breaking Change
+**Roaming configuration moved from device-level to per-SSID**
+
+This allows disabling 802.11r (Fast Transition) for specific SSIDs where stationary devices (like Sonos speakers, IoT devices) may have compatibility issues.
+
+#### Old Schema (v2.x)
+```yaml
+wifi:
+  roaming:
+    enabled: yes
+    fastTransition: yes   # Applied to ALL SSIDs
+ssids:
+  - ssid: MyNetwork
+    vlan: 100
+    bands: [2.4GHz, 5GHz]
+```
+
+#### New Schema (v3.0)
+```yaml
+ssids:
+  - ssid: MyNetwork
+    vlan: 100
+    bands: [2.4GHz, 5GHz]
+    roaming:
+      fastTransition: true   # Per-SSID control
+
+  - ssid: Sonos
+    vlan: 100
+    bands: [2.4GHz]
+    # No roaming = 802.11r disabled for this SSID
+```
+
+### Migration Guide
+1. Remove `wifi.roaming` from your configuration
+2. Add `roaming: { fastTransition: true }` to SSIDs that need 802.11r
+3. Leave `roaming` absent for stationary device SSIDs
+
+### Benefits
+- **Fix Sonos/IoT issues**: Disable 802.11r for networks with stationary devices
+- **Granular control**: Enable roaming only where mobile devices benefit
+- **Cleaner config**: Roaming is now with the SSID it affects
+
+### Technical Details
+- Apply: Per-SSID `roaming.fastTransition` determines FT authentication type
+- Backup: Detects FT per-interface and adds `roaming` to appropriate SSIDs
+- wifi-qcom devices: Uses `security.ft=yes/no` parameter
+- wifiwave2 devices: Uses `ft-psk,wpa2-psk` or `wpa2-psk` auth types
+
 ## [2.8.0] - 2026-01-12 - Graceful Client Handling During Updates
 
 ### Added - Staggered Multi-Device Deployment

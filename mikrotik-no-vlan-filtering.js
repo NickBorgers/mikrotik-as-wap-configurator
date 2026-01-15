@@ -864,73 +864,8 @@ async function configureMikroTik(config = {}) {
       }
     }
 
-    // Configure roaming settings (applies to all WiFi interfaces)
-    if (wifiConfig.roaming) {
-      console.log('\nConfiguring Fast Roaming (802.11k/v/r):');
-      const roaming = wifiConfig.roaming;
-
-      const roamingCommands = [];
-
-      if (roaming.enabled !== undefined) {
-        // Note: RouterOS v7 doesn't have a single "roaming.enabled" setting
-        // The individual k/v/r settings enable roaming features
-        console.log(`  ✓ Fast roaming enabled: ${roaming.enabled}`);
-      }
-
-      // 802.11k - Neighbor Report
-      if (roaming.neighborReport !== undefined) {
-        const value = roaming.neighborReport ? 'yes' : 'no';
-        roamingCommands.push(`configuration.manager.beacon-interval=100`);
-        console.log(`  ✓ 802.11k Neighbor Report: ${value}`);
-      }
-
-      // 802.11v - BSS Transition
-      if (roaming.bssTransition !== undefined) {
-        // RouterOS v7 supports BSS transition via steering
-        const value = roaming.bssTransition ? 'yes' : 'no';
-        console.log(`  ✓ 802.11v BSS Transition: ${value}`);
-      }
-
-      // 802.11r - Fast Transition (FT)
-      if (roaming.fastTransition !== undefined) {
-        const ftMode = roaming.fastTransition ? 'ft-psk' : 'wpa2-psk';
-        console.log(`  ✓ 802.11r Fast Transition: ${roaming.fastTransition ? 'enabled' : 'disabled'}`);
-        console.log(`  Note: FT is configured per-SSID via authentication type`);
-      }
-
-      if (roamingCommands.length > 0) {
-        try {
-          await mt.exec(`${wifiPath} set ${interface24},${interface5} ${roamingCommands.join(' ')}`);
-          console.log('  ✓ Applied roaming settings to all WiFi interfaces');
-        } catch (e) {
-          console.log(`  ⚠️  Failed to apply roaming settings: ${e.message}`);
-        }
-      }
-    }
-
     // Step 7: Process each SSID
     console.log('\n=== Step 7: Configuring SSIDs ===');
-
-    // Determine authentication type based on roaming configuration and package type
-    // wifi-qcom uses security.ft=yes, wifiwave2 uses ft-psk auth type
-    const useFastTransition = wifiConfig?.roaming?.fastTransition;
-    let authTypes;
-    let ftParam;
-    if (wifiPackage === 'wifi-qcom') {
-      // wifi-qcom doesn't support ft-psk auth type, use security.ft=yes instead
-      authTypes = 'wpa2-psk';
-      ftParam = useFastTransition ? 'security.ft=yes' : '';
-      if (useFastTransition) {
-        console.log('  ℹ️  Using Fast Transition (802.11r) via security.ft=yes for wifi-qcom');
-      }
-    } else {
-      // wifiwave2 uses ft-psk auth type
-      authTypes = useFastTransition ? 'ft-psk,wpa2-psk' : 'wpa2-psk';
-      ftParam = '';
-      if (useFastTransition) {
-        console.log('  ℹ️  Using Fast Transition (802.11r) authentication for seamless roaming');
-      }
-    }
 
     // Track which interfaces have been used for each band
     const bandUsage = {
@@ -950,6 +885,24 @@ async function configureMikroTik(config = {}) {
       console.log(`  VLAN: ${vlan}`);
       console.log(`  Bands: ${bands.join(', ')}`);
       console.log(`  Password: ${passphrase}`);
+
+      // Determine authentication type based on per-SSID roaming configuration
+      // wifi-qcom uses security.ft=yes, wifiwave2 uses ft-psk auth type
+      const useFastTransition = ssidConfig.roaming?.fastTransition === true;
+      let authTypes;
+      let ftParam;
+      if (wifiPackage === 'wifi-qcom') {
+        // wifi-qcom doesn't support ft-psk auth type, use security.ft=yes instead
+        authTypes = 'wpa2-psk';
+        ftParam = useFastTransition ? 'security.ft=yes' : 'security.ft=no';
+      } else {
+        // wifiwave2 uses ft-psk auth type
+        authTypes = useFastTransition ? 'ft-psk,wpa2-psk' : 'wpa2-psk';
+        ftParam = '';
+      }
+      if (useFastTransition) {
+        console.log(`  802.11r: enabled`);
+      }
 
       // Configure each band this SSID should broadcast on
       for (const band of bands) {
@@ -1544,7 +1497,10 @@ async function backupMikroTikConfig(credentials = {}) {
             iface.band = '5GHz';
           }
 
-          console.log(`✓ Found WiFi interface: ${name} - SSID: ${ssid}`);
+          // Detect Fast Transition (802.11r) per-interface
+          iface.hasFastTransition = !!(raw.match(/authentication-types[=:].*ft-psk/) || raw.match(/\.ft=yes/));
+
+          console.log(`✓ Found WiFi interface: ${name} - SSID: ${ssid}${iface.hasFastTransition ? ' (FT enabled)' : ''}`);
         }
       }
 
@@ -1568,7 +1524,7 @@ async function backupMikroTikConfig(credentials = {}) {
         console.log(`⚠️  Could not read datapaths: ${e.message}`);
       }
 
-      // Step 6: Build SSID configurations
+      // Step 6: Build SSID configurations with per-SSID roaming detection
       console.log('\n=== Building SSID Configuration ===');
       const ssidMap = new Map();
 
@@ -1586,7 +1542,8 @@ async function backupMikroTikConfig(credentials = {}) {
             ssid: iface.ssid,
             passphrase: iface.passphrase || 'UNKNOWN',
             vlan: vlan,
-            bands: []
+            bands: [],
+            hasFastTransition: false
           });
         }
 
@@ -1594,45 +1551,36 @@ async function backupMikroTikConfig(credentials = {}) {
         if (!ssidConfig.bands.includes(iface.band)) {
           ssidConfig.bands.push(iface.band);
         }
+
+        // Track if any interface for this SSID has FT enabled
+        if (iface.hasFastTransition) {
+          ssidConfig.hasFastTransition = true;
+        }
       }
 
-      config.ssids = Array.from(ssidMap.values());
+      config.ssids = Array.from(ssidMap.values()).map(ssidConfig => {
+        const result = {
+          ssid: ssidConfig.ssid,
+          passphrase: ssidConfig.passphrase,
+          vlan: ssidConfig.vlan,
+          bands: ssidConfig.bands
+        };
+
+        // Add roaming config if FT is enabled for this SSID
+        if (ssidConfig.hasFastTransition) {
+          result.roaming = { fastTransition: true };
+        }
+
+        return result;
+      });
 
       for (const ssid of config.ssids) {
         console.log(`✓ SSID: ${ssid.ssid}`);
         console.log(`  Bands: ${ssid.bands.join(', ')}`);
         console.log(`  VLAN: ${ssid.vlan}`);
-      }
-
-      // Step 7: Detect roaming settings (802.11r Fast Transition)
-      console.log('\n=== Detecting Roaming Settings ===');
-
-      // Check if any WiFi interface has FT enabled
-      let ftEnabled = false;
-      for (const iface of interfaces) {
-        // Check for ft-psk in authentication-types (RouterOS v7 format)
-        if (iface.raw && (iface.raw.match(/authentication-types[=:].*ft-psk/) || iface.raw.match(/\.ft=yes/))) {
-          ftEnabled = true;
-          break;
+        if (ssid.roaming?.fastTransition) {
+          console.log(`  802.11r: enabled`);
         }
-      }
-
-      if (ftEnabled) {
-        // Initialize wifi object if it doesn't exist
-        if (!config.wifi) {
-          config.wifi = {};
-        }
-
-        // Add roaming configuration
-        config.wifi.roaming = {
-          enabled: true,
-          neighborReport: true,
-          bssTransition: true,
-          fastTransition: true
-        };
-        console.log('✓ Fast Transition (802.11r) detected - adding roaming configuration');
-      } else {
-        console.log('  No Fast Transition detected');
       }
 
     } catch (e) {
