@@ -35,39 +35,54 @@ wifi:
     txPower: 18             # TX power in dBm
     width: 20/40/80mhz      # Channel width (20/40/80mhz for better throughput, or 20/40/80/160mhz if supported)
 
-  # Fast Roaming Settings (802.11k/v/r)
-  # Enables seamless handoff between multiple APs
-  roaming:
-    enabled: yes            # Enable fast roaming features
-    neighborReport: yes     # 802.11k - Radio Resource Management
-    bssTransition: yes      # 802.11v - BSS Transition Management
-    fastTransition: yes     # 802.11r - Fast BSS Transition
-
 # SSID Configuration
 # Each SSID can be broadcast on 2.4GHz, 5GHz, or both bands
+#
+# Fast Roaming (802.11r/k/v) - configured per-SSID:
+#   fastTransition: true   - 802.11r Fast BSS Transition (reduces handoff time)
+#
+# Recommendation:
+#   - Enable for mobile devices (laptops, phones) that move between APs
+#   - Disable for stationary devices (Sonos, IoT) that may have 802.11r issues
+#
 ssids:
-  # SSID on both bands (typical use case)
+  # Primary network with full roaming support for mobile devices
   - ssid: MyNetwork
     passphrase: secure-password-here
     vlan: 100
     bands:
       - 2.4GHz
       - 5GHz
+    roaming:
+      fastTransition: true  # 802.11r enabled - seamless handoff between APs
 
-  # SSID on 5GHz only (for faster devices)
+  # 5GHz only network with roaming (high-performance devices)
   - ssid: MyNetwork-5G
     passphrase: secure-password-here
     vlan: 100
     bands:
       - 5GHz
+    roaming:
+      fastTransition: true  # 802.11r enabled
 
-  # Guest network on both bands with different VLAN
+  # IoT/Sonos network - 802.11r DISABLED for stationary devices
+  # Many IoT devices and Sonos speakers have issues with 802.11r
+  - ssid: IoT-Devices
+    passphrase: iot-password
+    vlan: 100
+    bands:
+      - 2.4GHz
+    # No roaming config = 802.11r disabled (recommended for stationary devices)
+
+  # Guest network - 802.11r disabled for simplicity
+  # Guest devices may have varying 802.11r support
   - ssid: Guest-WiFi
     passphrase: guest-password
     vlan: 200
     bands:
       - 2.4GHz
       - 5GHz
+    # No roaming config = 802.11r disabled
 
 # Supported bands: 2.4GHz, 5GHz
 # Supported VLANs: Any VLAN ID (100, 200, etc.)

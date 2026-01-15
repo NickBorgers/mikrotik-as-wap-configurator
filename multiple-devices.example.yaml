@@ -8,8 +8,12 @@
 #
 # For multiple physically close devices:
 #   - Use non-overlapping channels (2.4GHz: 1/6/11, 5GHz: 36/52/149)
-#   - Enable fast roaming for seamless handoff
 #   - Use ./diag/optimize-wifi-channels.js to analyze and suggest optimal channels
+#
+# 802.11r Fast Roaming (per-SSID):
+#   - Enable for mobile devices: roaming: { fastTransition: true }
+#   - Disable for stationary devices (Sonos, IoT): omit roaming config
+#   - Each SSID can have different roaming settings
 
 # Regulatory domain - applies to all devices in the deployment
 country: United States
@@ -43,28 +47,26 @@ devices:
         channel: 36       # Non-overlapping channel 36
         txPower: 18
         width: 20/40/80mhz  # Wider channels for better throughput
-      roaming:
-        enabled: yes
-        neighborReport: yes   # 802.11k
-        bssTransition: yes    # 802.11v
-        fastTransition: yes   # 802.11r
     ssids:
-      # Primary network on both bands
+      # Primary network with 802.11r for seamless roaming
       - ssid: MyNetwork
         passphrase: secure-password-here
         vlan: 100
         bands:
           - 2.4GHz
           - 5GHz
+        roaming:
+          fastTransition: true  # 802.11r enabled
 
-      # IoT devices on 2.4GHz only
+      # IoT devices - no 802.11r (stationary devices)
       - ssid: IoT-Devices
         passphrase: iot-password-here
         vlan: 100
         bands:
           - 2.4GHz
+        # No roaming config = 802.11r disabled
 
-      # Guest network on separate VLAN
+      # Guest network without roaming
       - ssid: Guest-WiFi
         passphrase: guest-password-here
         vlan: 200
@@ -91,11 +93,6 @@ devices:
         channel: 52       # Non-overlapping channel 52
         txPower: 18
         width: 20/40/80mhz  # Wider channels for better throughput
-      roaming:
-        enabled: yes
-        neighborReport: yes
-        bssTransition: yes
-        fastTransition: yes
     ssids:
       - ssid: MyNetwork
         passphrase: secure-password-here
@@ -103,6 +100,8 @@ devices:
         bands:
           - 2.4GHz
           - 5GHz
+        roaming:
+          fastTransition: true
 
       - ssid: IoT-Devices
         passphrase: iot-password-here
@@ -136,11 +135,6 @@ devices:
         channel: 149      # Non-overlapping channel 149
         txPower: 18
         width: 20/40/80mhz  # Wider channels for better throughput
-      roaming:
-        enabled: yes
-        neighborReport: yes
-        bssTransition: yes
-        fastTransition: yes
     ssids:
       # 5GHz only for high-performance devices
       - ssid: MyNetwork-5G
@@ -148,6 +142,8 @@ devices:
         vlan: 100
         bands:
           - 5GHz
+        roaming:
+          fastTransition: true
 
       # Corporate network
       - ssid: Corporate
@@ -156,6 +152,8 @@ devices:
         bands:
           - 2.4GHz
           - 5GHz
+        roaming:
+          fastTransition: true
 
   # Fourth Access Point (LACP bonded uplink for redundancy)
   # Requires switch support for LACP (802.3ad)
@@ -180,11 +178,6 @@ devices:
         channel: 36
         txPower: 18
         width: 20/40/80mhz
-      roaming:
-        enabled: yes
-        neighborReport: yes
-        bssTransition: yes
-        fastTransition: yes
     ssids:
       - ssid: MyNetwork
         passphrase: secure-password-here
@@ -192,3 +185,5 @@ devices:
         bands:
           - 2.4GHz
           - 5GHz
+        roaming:
+          fastTransition: true
