@@ -44,8 +44,9 @@
 
 **LACP Bonding (for redundant uplinks)**
 - LACP bonds (802.3ad) supported for devices with multiple Ethernet ports
-- First interface in the bond list is set as "primary" to ensure consistent MAC address
-- This fixes DHCP static lease issues - bond MAC no longer changes across reboots
+- Script reads first interface's MAC and sets `forced-mac-address` on bond
+- This ensures consistent MAC for DHCP static leases regardless of interface startup order
+- Note: MikroTik's `primary` parameter only affects failover, not MAC address selection
 - Requires upstream switch configured for LACP on corresponding ports
 - Example config: `managementInterfaces: [{bond: [ether1, ether2]}]`
 
