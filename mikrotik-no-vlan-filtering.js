@@ -283,27 +283,55 @@ async function configureMikroTik(config = {}) {
           }
         }
 
+        // Get FACTORY MAC address of first interface BEFORE creating bond
+        // Must use factory-mac-address, not mac-address, since current MAC might be
+        // modified by previous bonding configuration
+        let primaryMac = null;
+        try {
+          const ethDetail = await mt.exec(`/interface ethernet print detail where default-name=${bondMembers[0]}`);
+          // Use factory-mac-address to get the original hardware MAC
+          const macMatch = ethDetail.match(/factory-mac-address=([0-9A-Fa-f:]+)/);
+          if (macMatch) {
+            primaryMac = macMatch[1];
+            console.log(`✓ Using ${bondMembers[0]} factory MAC for bond: ${primaryMac}`);
+          } else {
+            // Fallback to mac-address if factory-mac-address not found
+            const fallbackMatch = ethDetail.match(/mac-address=([0-9A-Fa-f:]+)/);
+            if (fallbackMatch) {
+              primaryMac = fallbackMatch[1];
+              console.log(`✓ Using ${bondMembers[0]} MAC for bond: ${primaryMac} (factory MAC not found)`);
+            }
+          }
+        } catch (e) {
+          console.log(`⚠️  Could not read ${bondMembers[0]} MAC address: ${e.message}`);
+        }
+
         // Create or update bond interface
         try {
           // First check if bond exists
           const bondCheck = await mt.exec(`/interface bonding print where name=${bondName}`);
+
+          // Build bond command with forced-mac-address if we have it
+          const macParam = primaryMac ? ` forced-mac-address=${primaryMac}` : '';
+
           if (!bondCheck || bondCheck.includes('no such item') || !bondCheck.includes(bondName)) {
             // Create new bond with LACP (802.3ad mode)
-            // Set primary to first slave for consistent MAC address (fixes DHCP static lease issues)
-            await mt.exec(`/interface bonding add name=${bondName} slaves="${bondMembers.join(',')}" mode=802.3ad lacp-rate=30secs transmit-hash-policy=layer-2-and-3 primary=${bondMembers[0]}`);
-            console.log(`✓ Created LACP bond ${bondName} with members: ${bondMembers.join(', ')} (primary: ${bondMembers[0]})`);
+            // Use forced-mac-address to ensure consistent MAC for DHCP static leases
+            await mt.exec(`/interface bonding add name=${bondName} slaves="${bondMembers.join(',')}" mode=802.3ad lacp-rate=30secs transmit-hash-policy=layer-2-and-3${macParam}`);
+            console.log(`✓ Created LACP bond ${bondName} with members: ${bondMembers.join(', ')}`);
           } else {
             // Update existing bond
-            await mt.exec(`/interface bonding set [find name=${bondName}] slaves="${bondMembers.join(',')}" mode=802.3ad lacp-rate=30secs transmit-hash-policy=layer-2-and-3 primary=${bondMembers[0]}`);
-            console.log(`✓ Updated LACP bond ${bondName} with members: ${bondMembers.join(', ')} (primary: ${bondMembers[0]})`);
+            await mt.exec(`/interface bonding set [find name=${bondName}] slaves="${bondMembers.join(',')}" mode=802.3ad lacp-rate=30secs transmit-hash-policy=layer-2-and-3${macParam}`);
+            console.log(`✓ Updated LACP bond ${bondName} with members: ${bondMembers.join(', ')}`);
           }
         } catch (e) {
           console.log(`⚠️  Bond configuration error: ${e.message}`);
           // Try alternative approach for existing bonds
+          const macParam = primaryMac ? ` forced-mac-address=${primaryMac}` : '';
           try {
             await mt.exec(`/interface bonding remove [find name=${bondName}]`);
-            await mt.exec(`/interface bonding add name=${bondName} slaves="${bondMembers.join(',')}" mode=802.3ad lacp-rate=30secs transmit-hash-policy=layer-2-and-3 primary=${bondMembers[0]}`);
-            console.log(`✓ Recreated LACP bond ${bondName} (primary: ${bondMembers[0]})`);
+            await mt.exec(`/interface bonding add name=${bondName} slaves="${bondMembers.join(',')}" mode=802.3ad lacp-rate=30secs transmit-hash-policy=layer-2-and-3${macParam}`);
+            console.log(`✓ Recreated LACP bond ${bondName}`);
           } catch (e2) {
             console.log(`✗ Failed to configure bond: ${e2.message}`);
           }
