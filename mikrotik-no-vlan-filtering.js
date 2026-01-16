@@ -374,9 +374,8 @@ async function enableDhcpClient(mt) {
  * Configure remote syslog
  * @param {MikroTikSSH} mt - Connected SSH session
  * @param {Object} config - Configuration with syslog settings
- * @param {string} [deviceIdentity] - Device identity to use as syslog prefix
  */
-async function configureSyslog(mt, config, deviceIdentity) {
+async function configureSyslog(mt, config) {
   if (!config.syslog || !config.syslog.server) {
     return;
   }
@@ -398,26 +397,16 @@ async function configureSyslog(mt, config, deviceIdentity) {
   } catch (e) { /* ignore */ }
 
   try {
-    // Build the logging action command with optional prefix for device identification
-    let actionCmd = `/system logging action add name="${syslogActionName}" target=remote ` +
-      `remote=${syslogServer} remote-port=${syslogPort}`;
-
-    // Add prefix with device identity so logs can be attributed to specific WAPs
-    // This is critical for CAPsMAN deployments where all logs come from controller IP
-    if (deviceIdentity) {
-      actionCmd += ` prefix="${deviceIdentity}"`;
-    }
-
-    await mt.exec(actionCmd);
+    await mt.exec(
+      `/system logging action add name="${syslogActionName}" target=remote ` +
+      `remote=${syslogServer} remote-port=${syslogPort}`
+    );
 
     for (const topic of syslogTopics) {
       await mt.exec(`/system logging add topics=${topic} action="${syslogActionName}"`);
     }
 
     console.log(`✓ Syslog configured: ${syslogServer}:${syslogPort}`);
-    if (deviceIdentity) {
-      console.log(`  Prefix: ${deviceIdentity}`);
-    }
     console.log(`  Topics: ${syslogTopics.join(', ')}`);
   } catch (e) {
     console.log(`⚠️  Syslog config: ${e.message}`);
@@ -704,7 +693,7 @@ async function configureController(config = {}) {
     }
 
     // Step 0: Set device identity
-    const deviceIdentity = await setDeviceIdentity(mt, config);
+    await setDeviceIdentity(mt, config);
 
     // Step 1: Detect WiFi package
     const wifiPackage = await detectWifiPackage(mt);
@@ -843,8 +832,114 @@ async function configureController(config = {}) {
       console.log(`⚠️  Local WiFi config: ${e.message}`);
     }
 
-    // Step 9: Configure Syslog (with device identity prefix for log attribution)
-    await configureSyslog(mt, config, deviceIdentity);
+    // Step 9: Configure Syslog
+    await configureSyslog(mt, config);
+
+    // Step 10: Validate CAPsMAN configuration was applied correctly
+    console.log('\n=== Validating CAPsMAN Configuration ===');
+    const validationErrors = [];
+
+    // Check CAPsMAN is enabled
+    try {
+      const capsmanStatus = await mt.exec(`${capsmanPath} print`);
+      if (!capsmanStatus.includes('enabled: yes') && !capsmanStatus.includes('enabled=yes')) {
+        validationErrors.push('CAPsMAN is not enabled');
+      } else {
+        console.log('✓ CAPsMAN service is enabled');
+      }
+    } catch (e) {
+      validationErrors.push(`Could not verify CAPsMAN status: ${e.message}`);
+    }
+
+    // Check provisioning rules exist (critical for wifiwave2, indicates problem for wifi-qcom)
+    try {
+      const provisioningOutput = await mt.exec(`${capsmanPath}/provisioning print`);
+
+      // MikroTik outputs errors to stdout, so check for error patterns in output
+      if (provisioningOutput.includes('bad command name')) {
+        validationErrors.push(
+          `CAPsMAN provisioning command not available (${wifiPackage}). ` +
+          'This device may require a different CAPsMAN configuration approach'
+        );
+      } else {
+        // Count non-empty lines that aren't headers
+        const hasProvisioningRules = provisioningOutput.split('\n')
+          .filter(line => line.trim() && !line.includes('Flags:') && !line.includes('Columns:') && !line.includes('#')).length > 0;
+
+        if (!hasProvisioningRules) {
+          if (wifiPackage === 'wifi-qcom') {
+            validationErrors.push(
+              'No provisioning rules found. wifi-qcom CAPsMAN does not support provisioning rules - ' +
+              'this device type requires a different CAPsMAN configuration approach'
+            );
+          } else {
+            validationErrors.push('No provisioning rules found - CAPs will not receive configuration');
+          }
+        } else {
+          console.log('✓ Provisioning rules configured');
+        }
+      }
+    } catch (e) {
+      if (e.message.includes('bad command name')) {
+        validationErrors.push(
+          `CAPsMAN provisioning command not available (${wifiPackage}). ` +
+          'This device may require a different CAPsMAN configuration approach'
+        );
+      } else if (!e.message.includes('no such item')) {
+        validationErrors.push(`Could not verify provisioning rules: ${e.message}`);
+      }
+    }
+
+    // Check master configurations exist (for wifiwave2)
+    try {
+      const configOutput = await mt.exec(`${capsmanPath}/configuration print`);
+
+      // MikroTik outputs errors to stdout, so check for error patterns in output
+      if (configOutput.includes('bad command name')) {
+        if (wifiPackage === 'wifi-qcom') {
+          // wifi-qcom doesn't have this command - already flagged above
+          console.log(`⚠️  Configuration command not available (${wifiPackage})`);
+        } else {
+          validationErrors.push('CAPsMAN configuration command not available');
+        }
+      } else {
+        const hasConfigurations = configOutput.split('\n')
+          .filter(line => line.trim() && !line.includes('Flags:') && !line.includes('Columns:') && !line.includes('#')).length > 0;
+
+        if (!hasConfigurations) {
+          if (wifiPackage === 'wifi-qcom') {
+            // wifi-qcom doesn't use configuration objects, this is expected to fail
+            console.log('⚠️  wifi-qcom: No configuration objects (expected - uses different model)');
+          } else {
+            validationErrors.push('No master configurations found - SSIDs not configured');
+          }
+        } else {
+          console.log('✓ Master configurations created');
+        }
+      }
+    } catch (e) {
+      if (e.message.includes('bad command name')) {
+        // wifi-qcom doesn't have this command - already flagged above
+        console.log(`⚠️  Configuration command not available (${wifiPackage})`);
+      } else if (!e.message.includes('no such item')) {
+        validationErrors.push(`Could not verify master configurations: ${e.message}`);
+      }
+    }
+
+    // Report validation results
+    if (validationErrors.length > 0) {
+      console.log('\n========================================');
+      console.log('✗✗✗ CAPsMAN Controller Configuration FAILED ✗✗✗');
+      console.log('========================================');
+      console.log('\nValidation errors:');
+      for (const error of validationErrors) {
+        console.log(`  ✗ ${error}`);
+      }
+      console.log('\nThe controller may not function correctly.');
+      console.log('Please review the errors above and fix the configuration.');
+      await mt.close();
+      throw new Error(`CAPsMAN validation failed: ${validationErrors.join('; ')}`);
+    }
 
     console.log('\n========================================');
     console.log('✓✓✓ CAPsMAN Controller Configuration Complete! ✓✓✓');
@@ -889,7 +984,7 @@ async function configureCap(config = {}) {
     }
 
     // Step 0: Set device identity
-    const deviceIdentity = await setDeviceIdentity(mt, config);
+    await setDeviceIdentity(mt, config);
 
     // Step 1: Detect WiFi package
     const wifiPackage = await detectWifiPackage(mt);
@@ -978,8 +1073,64 @@ async function configureCap(config = {}) {
       console.log(`✗ Failed to enable CAP: ${e.message}`);
     }
 
-    // Step 7: Configure Syslog (with device identity prefix for log attribution)
-    await configureSyslog(mt, config, deviceIdentity);
+    // Step 7: Configure Syslog
+    await configureSyslog(mt, config);
+
+    // Step 8: Validate CAP configuration was applied correctly
+    console.log('\n=== Validating CAP Configuration ===');
+    const validationErrors = [];
+
+    // Check CAP mode is enabled
+    try {
+      const capStatus = await mt.exec(`${capPath} print`);
+      if (!capStatus.includes('enabled: yes') && !capStatus.includes('enabled=yes')) {
+        validationErrors.push('CAP mode is not enabled');
+      } else {
+        console.log('✓ CAP mode is enabled');
+      }
+
+      // Check if connected to controller
+      if (capStatus.includes('current-caps-man-address:')) {
+        const match = capStatus.match(/current-caps-man-address:\s*(\S+)/);
+        if (match && match[1] && match[1] !== '') {
+          console.log(`✓ Connected to controller: ${match[1]}`);
+        } else {
+          console.log('⚠️  CAP enabled but not yet connected to controller (may take a moment)');
+        }
+      }
+    } catch (e) {
+      validationErrors.push(`Could not verify CAP status: ${e.message}`);
+    }
+
+    // Check WiFi interfaces are in CAP-managed mode
+    try {
+      const wifiStatus = await mt.exec(`${wifiPath} print detail where name=wifi1 or name=wifi2`);
+      if (wifiStatus.includes('manager=capsman') || wifiStatus.includes('.manager=capsman')) {
+        console.log('✓ WiFi interfaces set to CAPsMAN-managed mode');
+      } else if (wifiStatus.includes('managed by CAPsMAN')) {
+        console.log('✓ WiFi interfaces are managed by CAPsMAN');
+      } else {
+        console.log('⚠️  WiFi interfaces may not be in CAPsMAN-managed mode');
+      }
+    } catch (e) {
+      // Non-fatal - just informational
+      console.log(`⚠️  Could not verify WiFi interface mode: ${e.message}`);
+    }
+
+    // Report validation results
+    if (validationErrors.length > 0) {
+      console.log('\n========================================');
+      console.log('✗✗✗ CAP Configuration FAILED ✗✗✗');
+      console.log('========================================');
+      console.log('\nValidation errors:');
+      for (const error of validationErrors) {
+        console.log(`  ✗ ${error}`);
+      }
+      console.log('\nThe CAP may not connect to the controller correctly.');
+      console.log('Please review the errors above and fix the configuration.');
+      await mt.close();
+      throw new Error(`CAP validation failed: ${validationErrors.join('; ')}`);
+    }
 
     console.log('\n========================================');
     console.log('✓✓✓ CAP Configuration Complete! ✓✓✓');
@@ -1030,7 +1181,7 @@ async function configureMikroTik(config = {}) {
     }
 
     // Step 0: Set device identity based on hostname (if FQDN provided)
-    const deviceIdentity = await setDeviceIdentity(mt, config);
+    await setDeviceIdentity(mt, config);
 
     // Step 0.5-1: Ensure bridge exists and disable VLAN filtering
     await ensureBridgeInfrastructure(mt);
@@ -1827,8 +1978,8 @@ async function configureMikroTik(config = {}) {
       }
     }
 
-    // Step 8: Configure Syslog (with device identity prefix for log attribution)
-    await configureSyslog(mt, config, deviceIdentity);
+    // Step 8: Configure Syslog (if specified)
+    await configureSyslog(mt, config);
 
     console.log('\n========================================');
     console.log('✓✓✓ Configuration Complete! ✓✓✓');
@@ -2336,7 +2487,6 @@ async function backupMikroTikConfig(credentials = {}) {
         // Parse the remote server and port
         const remoteMatch = actionOutput.match(/remote=([^\s]+)/);
         const portMatch = actionOutput.match(/remote-port=(\d+)/);
-        const prefixMatch = actionOutput.match(/prefix="([^"]+)"/);
 
         if (remoteMatch) {
           config.syslog = {
@@ -2357,10 +2507,6 @@ async function backupMikroTikConfig(credentials = {}) {
           }
 
           console.log(`✓ Found syslog configuration: ${config.syslog.server}:${config.syslog.port}`);
-          // Prefix is derived from device identity at apply time, so we just log it for visibility
-          if (prefixMatch) {
-            console.log(`  Prefix: ${prefixMatch[1]} (derived from device identity)`);
-          }
           console.log(`  Topics: ${config.syslog.topics.join(', ')}`);
         }
       } else {
