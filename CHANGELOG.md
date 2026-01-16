@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.1.1] - 2026-01-16 - LACP Bond Support for CAPsMAN
+
+### Fixed - LACP Bond Configuration in CAPsMAN Mode
+- **Missing bond support** - `configureController()` and `configureCap()` were not handling LACP bonds
+- **Deterministic MAC addresses** - Bonded CAPsMAN devices now use `forced-mac-address` from first interface
+- **Shared helper function** - Extracted `configureLacpBond()` for consistent bond configuration across all modes
+
+### Technical Details
+- Previously, LACP bonds with deterministic MACs only worked in standalone mode
+- CAPsMAN devices with bonds (controller or CAP) would lose their forced MAC if reset and re-provisioned
+- Now all three modes (standalone, controller, cap) properly configure bonds with `orig-mac-address`
+
 ## [4.1.0] - 2026-01-16 - Dedicated CAPsMAN VLAN & Docker Multi-Device Support
 
 ### Added - Docker Multi-Device Support
