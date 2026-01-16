@@ -169,6 +169,93 @@ function getCapPath(wifiPackage) {
 }
 
 /**
+ * Configure dedicated CAPsMAN VLAN for L2 CAP↔Controller connectivity
+ * Creates VLAN interface, assigns static IP, and adds firewall rules
+ *
+ * @param {MikroTikSSH} mt - Connected SSH session
+ * @param {Object} config - Device configuration containing capsmanVlan and capsmanAddress
+ * @returns {string|null} - The configured static IP or null if not configured
+ */
+async function configureCapsmanVlan(mt, config) {
+  const capsmanVlan = config.capsmanVlan || {};
+  const vlanId = capsmanVlan.vlan;
+  const staticIp = config.capsmanAddress;
+  const network = capsmanVlan.network;
+
+  // Skip if no VLAN config or static IP specified
+  if (!vlanId || !staticIp) {
+    return null;
+  }
+
+  console.log('\n=== Configuring CAPsMAN VLAN ===');
+  console.log(`VLAN ID: ${vlanId}`);
+  console.log(`Static IP: ${staticIp}`);
+
+  // Extract prefix from network (e.g., "10.252.50.0/24" -> "24")
+  let prefix = '24';
+  if (network && network.includes('/')) {
+    prefix = network.split('/')[1];
+  }
+
+  // Step 1: Remove existing CAPsMAN VLAN interface if present
+  try {
+    await mt.exec('/interface vlan remove [find name=capsman-vlan]');
+    console.log('✓ Removed existing capsman-vlan (if any)');
+  } catch (e) {
+    // Ignore - interface may not exist
+  }
+
+  // Step 2: Remove existing firewall rules for CAPsMAN VLAN
+  try {
+    await mt.exec('/ip firewall filter remove [find comment~"CAPsMAN"]');
+    console.log('✓ Removed existing CAPsMAN firewall rules (if any)');
+  } catch (e) {
+    // Ignore - rules may not exist
+  }
+
+  // Step 3: Create VLAN interface on bridge
+  try {
+    await mt.exec(`/interface vlan add name=capsman-vlan vlan-id=${vlanId} interface=bridge`);
+    console.log(`✓ Created VLAN interface: capsman-vlan (VLAN ${vlanId})`);
+  } catch (e) {
+    console.log(`✗ Failed to create VLAN interface: ${e.message}`);
+    return null;
+  }
+
+  // Step 4: Assign static IP
+  try {
+    await mt.exec(`/ip address add address=${staticIp}/${prefix} interface=capsman-vlan`);
+    console.log(`✓ Assigned IP address: ${staticIp}/${prefix}`);
+  } catch (e) {
+    console.log(`✗ Failed to assign IP: ${e.message}`);
+    return null;
+  }
+
+  // Step 5: Add firewall rules - allow CAPWAP, block everything else
+  // Place rules at the beginning of the filter chain
+  try {
+    // Allow CAPWAP traffic (UDP 5246-5247)
+    await mt.exec(
+      '/ip firewall filter add chain=input protocol=udp dst-port=5246-5247 ' +
+      'in-interface=capsman-vlan action=accept place-before=0 comment="CAPsMAN CAPWAP - allow"'
+    );
+    console.log('✓ Added firewall rule: allow CAPWAP (UDP 5246-5247)');
+
+    // Block all other traffic on CAPsMAN VLAN
+    await mt.exec(
+      '/ip firewall filter add chain=input in-interface=capsman-vlan ' +
+      'action=drop place-before=1 comment="CAPsMAN VLAN - block admin"'
+    );
+    console.log('✓ Added firewall rule: block other traffic (admin protection)');
+  } catch (e) {
+    console.log(`⚠️  Firewall rule error: ${e.message}`);
+  }
+
+  console.log(`✓ CAPsMAN VLAN configured successfully`);
+  return staticIp;
+}
+
+/**
  * Configure device as CAPsMAN Controller
  * Creates master configurations, provisioning rules, and enables CAPsMAN service
  */
@@ -294,6 +381,9 @@ async function configureController(config = {}) {
         console.log('✓ DHCP client already exists');
       }
     }
+
+    // Step 4.5: Configure CAPsMAN VLAN (if specified)
+    await configureCapsmanVlan(mt, config);
 
     // Step 5: Clean up old CAPsMAN configurations
     console.log('\n=== Step 5: Cleaning Up Old CAPsMAN Configurations ===');
@@ -609,6 +699,9 @@ async function configureCap(config = {}) {
       }
     }
 
+    // Step 4.5: Configure CAPsMAN VLAN (if specified)
+    const capsmanVlanIp = await configureCapsmanVlan(mt, config);
+
     // Step 5: Configure WiFi interfaces for CAPsMAN management
     console.log('\n=== Step 5: Configuring WiFi Interfaces for CAPsMAN ===');
 
@@ -717,13 +810,15 @@ async function configureCap(config = {}) {
     try {
       // Enable CAP with controller addresses and discovery interface
       // Note: wifi-qcom only supports caps-man-addresses and discovery-interfaces
+      // Use CAPsMAN VLAN interface if configured, otherwise use bridge
+      const discoveryInterface = capsmanVlanIp ? 'capsman-vlan' : 'bridge';
       await mt.exec(
         `${capPath} set enabled=yes ` +
         `caps-man-addresses=${addressList} ` +
-        `discovery-interfaces=bridge`
+        `discovery-interfaces=${discoveryInterface}`
       );
       console.log(`✓ CAP enabled, connecting to: ${addressList}`);
-      console.log('✓ Discovery interface: bridge');
+      console.log(`✓ Discovery interface: ${discoveryInterface}`);
     } catch (e) {
       console.log(`✗ Failed to enable CAP: ${e.message}`);
     }
@@ -2249,6 +2344,59 @@ async function backupMikroTikConfig(credentials = {}) {
       }
     } catch (e) {
       console.log(`⚠️  Could not read syslog configuration: ${e.message}`);
+    }
+
+    // Step 9: Read CAPsMAN VLAN Configuration
+    console.log('\n=== Reading CAPsMAN VLAN Configuration ===');
+    try {
+      // Look for capsman-vlan interface
+      const vlanOutput = await mt.exec('/interface vlan print detail without-paging where name=capsman-vlan');
+
+      if (vlanOutput && vlanOutput.includes('capsman-vlan')) {
+        // Parse the VLAN ID
+        const vlanIdMatch = vlanOutput.match(/vlan-id=(\d+)/);
+
+        if (vlanIdMatch) {
+          const vlanId = parseInt(vlanIdMatch[1]);
+
+          // Get the IP address on this interface
+          const ipOutput = await mt.exec('/ip address print detail without-paging where interface=capsman-vlan');
+          const ipMatch = ipOutput.match(/address=(\d+\.\d+\.\d+\.\d+)\/(\d+)/);
+
+          if (ipMatch) {
+            const ip = ipMatch[1];
+            const prefix = ipMatch[2];
+
+            // Calculate network address from IP and prefix
+            const ipParts = ip.split('.').map(Number);
+            const prefixNum = parseInt(prefix);
+            const mask = ~((1 << (32 - prefixNum)) - 1) >>> 0;
+            const networkParts = [
+              (ipParts[0] & (mask >>> 24)) & 255,
+              (ipParts[1] & (mask >>> 16)) & 255,
+              (ipParts[2] & (mask >>> 8)) & 255,
+              (ipParts[3] & mask) & 255
+            ];
+            const network = `${networkParts.join('.')}/${prefix}`;
+
+            config.capsmanVlan = {
+              vlan: vlanId,
+              network: network
+            };
+            config.capsmanAddress = ip;
+
+            console.log(`✓ Found CAPsMAN VLAN: ${vlanId}`);
+            console.log(`  Network: ${network}`);
+            console.log(`  Device IP: ${ip}`);
+          } else {
+            console.log(`⚠️  Found capsman-vlan but no IP address assigned`);
+          }
+        }
+      } else {
+        console.log('  No CAPsMAN VLAN configured');
+      }
+    } catch (e) {
+      console.log(`⚠️  Could not read CAPsMAN VLAN configuration: ${e.message}`);
     }
 
     console.log('\n========================================');

@@ -1,5 +1,62 @@
 # Changelog
 
+## [4.1.0] - 2026-01-16 - Dedicated CAPsMAN VLAN
+
+### Added - CAPsMAN VLAN for L2 Connectivity
+- **Dedicated CAPsMAN VLAN** - Solves wifi-qcom L3 connectivity issues
+- **Problem**: wifi-qcom CAPsMAN has issues with L3/IP layer CAP↔Controller connections
+- **Solution**: Put all CAP↔Controller traffic on a dedicated L2 VLAN
+- **Static IP addressing** - Each device gets a predictable IP on the CAPsMAN VLAN
+- **Firewall protection** - Admin access (SSH/HTTP) blocked via CAPsMAN VLAN
+- **Only CAPWAP allowed** - UDP 5246-5247 traffic permitted on CAPsMAN VLAN
+
+### New YAML Schema
+```yaml
+# Deployment-level CAPsMAN VLAN configuration
+capsmanVlan:
+  vlan: 2525                    # VLAN ID for CAPsMAN traffic
+  network: 10.252.50.0/24       # Network for static IP addressing
+
+devices:
+  # Controller
+  - device:
+      host: controller.example.com
+    role: controller
+    capsmanAddress: 10.252.50.1      # Static IP on CAPsMAN VLAN
+    capsman:
+      certificate: auto
+
+  # CAP
+  - device:
+      host: cap1.example.com
+    role: cap
+    capsmanAddress: 10.252.50.2      # Static IP on CAPsMAN VLAN
+    cap:
+      controllerAddresses:
+        - 10.252.50.1                # Controller's CAPsMAN VLAN IP
+```
+
+### Implementation Details
+- Creates VLAN interface `capsman-vlan` on bridge
+- Assigns static IP with network prefix
+- Adds firewall rules (place-before=0 for priority):
+  - Allow CAPWAP (UDP 5246-5247) from CAPsMAN VLAN
+  - Block all other traffic from CAPsMAN VLAN
+- CAPs use `capsman-vlan` as discovery interface when configured
+- Backup reads CAPsMAN VLAN config and stores `capsmanAddress` per device
+
+### Backward Compatibility
+- `capsmanVlan` is optional - existing CAPsMAN configs work unchanged
+- Without `capsmanVlan`, CAPs use bridge interface for discovery (L3 mode)
+- CAPsMAN VLAN only used when both `capsmanVlan` and `capsmanAddress` are set
+
+### Rollback
+```bash
+# Remove CAPsMAN VLAN on a device
+/interface vlan remove [find name=capsman-vlan]
+/ip firewall filter remove [find comment~"CAPsMAN"]
+```
+
 ## [4.0.0] - 2026-01-16 - CAPsMAN Support with 802.11r/k/v Roaming
 
 ### Added - CAPsMAN Centralized WiFi Management

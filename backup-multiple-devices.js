@@ -232,6 +232,41 @@ async function main() {
     results.syslog = deploymentSyslog;
   }
 
+  // Extract capsmanVlan to top level if consistent across all devices
+  const capsmanVlans = results.devices
+    .map(d => d.capsmanVlan)
+    .filter(v => v && v.vlan);
+
+  let deploymentCapsmanVlan = null;
+  if (capsmanVlans.length > 0) {
+    // Check if all CAPsMAN VLAN configs have the same VLAN ID and network
+    const allSame = capsmanVlans.every(v =>
+      v.vlan === capsmanVlans[0].vlan &&
+      v.network === capsmanVlans[0].network
+    );
+
+    if (allSame) {
+      deploymentCapsmanVlan = {
+        vlan: capsmanVlans[0].vlan,
+        network: capsmanVlans[0].network
+      };
+
+      // Remove capsmanVlan from individual device configs (keep capsmanAddress)
+      results.devices.forEach(d => {
+        if (d.capsmanVlan) {
+          delete d.capsmanVlan;
+        }
+      });
+
+      console.log(`✓ CAPsMAN VLAN promoted to deployment level: VLAN ${deploymentCapsmanVlan.vlan}`);
+    }
+  }
+
+  // Add capsmanVlan at top level if found
+  if (deploymentCapsmanVlan) {
+    results.capsmanVlan = deploymentCapsmanVlan;
+  }
+
   const header = `# MikroTik Multi-Device Configuration
 # Last updated: ${new Date().toISOString()}
 # Devices: ${devices.length} (Successful: ${successCount}, Failed: ${failureCount})

@@ -94,6 +94,34 @@ const BAND_TO_INTERFACE = {
 - 5-second wait after controller for CAPsMAN service to initialize
 - CAPs then connect and receive configuration
 
+**CAPsMAN VLAN (Added v4.1.0)**
+- Dedicated L2 VLAN for CAP↔Controller traffic (solves wifi-qcom L3 issues)
+- Problem: wifi-qcom CAPsMAN has issues with L3/IP layer connections
+- Solution: Put all CAP↔Controller traffic on a dedicated L2 VLAN
+- Static IP addresses on each device (no DHCP needed, predictable addressing)
+- Firewall rules block admin access via CAPsMAN VLAN (security)
+- Only CAPWAP traffic (UDP 5246-5247) allowed on this VLAN
+- Configuration in `multiple-devices.yaml`:
+  ```yaml
+  capsmanVlan:
+    vlan: 2525              # VLAN ID for CAPsMAN traffic
+    network: 10.252.50.0/24 # Network for static IP addressing
+
+  devices:
+    - device: { host: controller.example.com, ... }
+      role: controller
+      capsmanAddress: 10.252.50.1  # Static IP on CAPsMAN VLAN
+    - device: { host: cap1.example.com, ... }
+      role: cap
+      capsmanAddress: 10.252.50.2  # Static IP on CAPsMAN VLAN
+      cap:
+        controllerAddresses:
+          - 10.252.50.1            # Controller's CAPsMAN VLAN IP
+  ```
+- Creates VLAN interface `capsman-vlan` on bridge
+- CAPs use `capsman-vlan` as discovery interface when configured
+- Rollback: `/interface vlan remove [find name=capsman-vlan]`
+
 ### MikroTik RouterOS v7 WiFi Quirks
 
 **Inline Configuration (not separate objects)**
