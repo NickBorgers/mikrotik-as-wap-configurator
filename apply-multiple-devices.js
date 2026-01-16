@@ -15,8 +15,9 @@ function loadConfig(configFile) {
   }
 }
 
-function validateDeviceConfig(config, index) {
+function validateDeviceConfig(config, index, deploymentSsids) {
   const errors = [];
+  const role = config.role || 'standalone';
 
   if (!config.device) {
     errors.push(`Device ${index}: Missing device configuration`);
@@ -26,12 +27,20 @@ function validateDeviceConfig(config, index) {
     if (!config.device.password) errors.push(`Device ${index}: Missing device.password`);
   }
 
-  if (!config.ssids || config.ssids.length === 0) {
-    errors.push(`Device ${index}: No SSIDs defined`);
-  }
+  // CAP devices get SSIDs from controller, so they don't need local SSIDs
+  if (role === 'cap') {
+    // Validate CAP-specific config
+    if (!config.cap || !config.cap.controllerAddresses || config.cap.controllerAddresses.length === 0) {
+      errors.push(`Device ${index} (CAP): Missing cap.controllerAddresses`);
+    }
+  } else {
+    // Controller and standalone devices need SSIDs
+    const ssids = config.ssids || deploymentSsids || [];
+    if (ssids.length === 0) {
+      errors.push(`Device ${index}: No SSIDs defined`);
+    }
 
-  if (config.ssids) {
-    config.ssids.forEach((ssid, ssidIndex) => {
+    ssids.forEach((ssid, ssidIndex) => {
       if (!ssid.ssid) errors.push(`Device ${index}, SSID ${ssidIndex}: missing ssid`);
       if (!ssid.passphrase) errors.push(`Device ${index}, SSID ${ssidIndex}: missing passphrase`);
       if (ssid.passphrase === 'UNKNOWN') {
@@ -52,6 +61,11 @@ function validateDeviceConfig(config, index) {
   }
 
   return errors;
+}
+
+// Check if deployment uses CAPsMAN (has devices with role: controller or cap)
+function isCapsmanDeployment(devices) {
+  return devices.some(d => d.role === 'controller' || d.role === 'cap');
 }
 
 async function main() {
@@ -128,12 +142,33 @@ async function main() {
   }
   console.log('');
 
+  // Check for CAPsMAN deployment
+  const capsmanMode = isCapsmanDeployment(devices);
+  const deploymentSsids = config.ssids || [];  // Deployment-level SSIDs for CAPsMAN
+
+  if (capsmanMode) {
+    const controller = devices.find(d => d.role === 'controller');
+    const caps = devices.filter(d => d.role === 'cap');
+    console.log('CAPsMAN deployment detected:');
+    console.log(`  Controller: ${controller ? controller.device?.host : 'MISSING'}`);
+    console.log(`  CAP devices: ${caps.length}`);
+    if (deploymentSsids.length > 0) {
+      console.log(`  Shared SSIDs: ${deploymentSsids.length}`);
+    }
+    console.log('');
+
+    if (!controller) {
+      console.error('✗ CAPsMAN deployment requires a device with role: controller');
+      process.exit(1);
+    }
+  }
+
   // Validate all devices first
   console.log('Validating configurations...');
   let hasValidationErrors = false;
 
   for (let i = 0; i < devices.length; i++) {
-    const errors = validateDeviceConfig(devices[i], i + 1);
+    const errors = validateDeviceConfig(devices[i], i + 1, deploymentSsids);
     if (errors.length > 0) {
       console.error(`\nValidation errors for device ${i + 1}:`);
       errors.forEach(err => console.error(`  - ${err}`));
@@ -148,33 +183,155 @@ async function main() {
 
   console.log('✓ All configurations valid\n');
 
+  // Helper to build mtConfig from deviceConfig
+  function buildMtConfig(deviceConfig) {
+    // Merge deployment-level country into device wifi config
+    let wifi = deviceConfig.wifi;
+    if (deploymentCountry && wifi && !wifi.country) {
+      wifi = { ...wifi, country: deploymentCountry };
+    } else if (deploymentCountry && !wifi) {
+      wifi = { country: deploymentCountry };
+    }
+
+    const role = deviceConfig.role || 'standalone';
+
+    // For controller: use deployment-level SSIDs if no device-level SSIDs
+    // For CAP: no SSIDs needed (gets from controller)
+    let ssids = deviceConfig.ssids;
+    if (role === 'controller' && (!ssids || ssids.length === 0)) {
+      ssids = deploymentSsids;
+    }
+
+    return {
+      host: deviceConfig.device.host,
+      username: deviceConfig.device.username,
+      password: deviceConfig.device.password,
+      identity: deviceConfig.identity,
+      managementInterfaces: deviceConfig.managementInterfaces || ['ether1'],
+      disabledInterfaces: deviceConfig.disabledInterfaces || [],
+      wifi,
+      syslog: deploymentSyslog,
+      ssids,
+      role,
+      capsman: deviceConfig.capsman,  // Controller settings
+      cap: deviceConfig.cap           // CAP settings
+    };
+  }
+
   // Apply configurations
   const results = [];
 
-  if (parallel) {
+  // CAPsMAN deployment: controller first, then CAPs
+  if (capsmanMode) {
+    const controller = devices.find(d => d.role === 'controller');
+    const caps = devices.filter(d => d.role === 'cap');
+    const standalones = devices.filter(d => !d.role || d.role === 'standalone');
+
+    // Phase 1: Configure controller
+    console.log('=== Phase 1: Configuring CAPsMAN Controller ===\n');
+    const controllerConfig = buildMtConfig(controller);
+    const controllerIndex = devices.indexOf(controller) + 1;
+
+    console.log(`${'='.repeat(60)}`);
+    console.log(`[Controller] ${controllerConfig.host}`);
+    console.log(`${'='.repeat(60)}`);
+    if (controllerConfig.ssids && controllerConfig.ssids.length > 0) {
+      console.log(`Master configurations (SSIDs): ${controllerConfig.ssids.length}`);
+      controllerConfig.ssids.forEach(ssid => {
+        const roamingInfo = [];
+        if (ssid.roaming?.fastTransition) roamingInfo.push('802.11r');
+        if (ssid.roaming?.rrm) roamingInfo.push('802.11k');
+        if (ssid.roaming?.wnm) roamingInfo.push('802.11v');
+        const roamingStr = roamingInfo.length > 0 ? ` [${roamingInfo.join(',')}]` : '';
+        console.log(`  - ${ssid.ssid} (VLAN ${ssid.vlan}, Bands: ${ssid.bands.join(', ')})${roamingStr}`);
+      });
+    }
+    console.log('');
+
+    try {
+      await configureMikroTik(controllerConfig);
+      results.push({ index: controllerIndex, host: controllerConfig.host, role: 'controller', success: true });
+      console.log(`\n✓ Controller configured: ${controllerConfig.host}`);
+    } catch (error) {
+      results.push({ index: controllerIndex, host: controllerConfig.host, role: 'controller', success: false, error: error.message });
+      console.error(`\n✗ Controller configuration failed: ${error.message}`);
+      console.error('Cannot proceed with CAP configuration without controller.');
+      process.exit(1);
+    }
+
+    // Wait for CAPsMAN to initialize
+    console.log('\n⏳ Waiting 5s for CAPsMAN service to initialize...');
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
+    // Phase 2: Configure CAPs
+    if (caps.length > 0) {
+      console.log(`\n=== Phase 2: Configuring ${caps.length} CAP Device(s) ===\n`);
+
+      if (parallel) {
+        const capPromises = caps.map(async (deviceConfig) => {
+          const mtConfig = buildMtConfig(deviceConfig);
+          const capIndex = devices.indexOf(deviceConfig) + 1;
+          try {
+            await configureMikroTik(mtConfig);
+            return { index: capIndex, host: mtConfig.host, role: 'cap', success: true };
+          } catch (error) {
+            return { index: capIndex, host: mtConfig.host, role: 'cap', success: false, error: error.message };
+          }
+        });
+        const capResults = await Promise.all(capPromises);
+        results.push(...capResults);
+      } else {
+        for (let i = 0; i < caps.length; i++) {
+          const deviceConfig = caps[i];
+          const mtConfig = buildMtConfig(deviceConfig);
+          const capIndex = devices.indexOf(deviceConfig) + 1;
+
+          console.log(`${'='.repeat(60)}`);
+          console.log(`[CAP ${i + 1}/${caps.length}] ${mtConfig.host}`);
+          console.log(`${'='.repeat(60)}`);
+          console.log(`Controller: ${mtConfig.cap?.controllerAddresses?.join(', ') || 'not specified'}`);
+          console.log('');
+
+          try {
+            await configureMikroTik(mtConfig);
+            results.push({ index: capIndex, host: mtConfig.host, role: 'cap', success: true });
+            console.log(`\n✓ CAP configured: ${mtConfig.host}`);
+          } catch (error) {
+            results.push({ index: capIndex, host: mtConfig.host, role: 'cap', success: false, error: error.message });
+            console.error(`\n✗ CAP configuration failed: ${error.message}`);
+          }
+
+          // Stagger delay between CAPs
+          const isLastCap = i === caps.length - 1;
+          if (!isLastCap && staggerDelay > 0) {
+            console.log(`\n⏳ Waiting ${staggerDelay}s before next CAP...`);
+            await new Promise(resolve => setTimeout(resolve, staggerDelay * 1000));
+          }
+        }
+      }
+    }
+
+    // Phase 3: Configure standalone devices (if any mixed in)
+    if (standalones.length > 0) {
+      console.log(`\n=== Phase 3: Configuring ${standalones.length} Standalone Device(s) ===\n`);
+      for (const deviceConfig of standalones) {
+        const mtConfig = buildMtConfig(deviceConfig);
+        const devIndex = devices.indexOf(deviceConfig) + 1;
+        try {
+          await configureMikroTik(mtConfig);
+          results.push({ index: devIndex, host: mtConfig.host, role: 'standalone', success: true });
+        } catch (error) {
+          results.push({ index: devIndex, host: mtConfig.host, role: 'standalone', success: false, error: error.message });
+        }
+      }
+    }
+
+  } else if (parallel) {
+    // Standard parallel deployment (non-CAPsMAN)
     console.log('Applying configurations in parallel...\n');
 
     const promises = devices.map(async (deviceConfig, index) => {
-      // Merge deployment-level country into device wifi config
-      let wifi = deviceConfig.wifi;
-      if (deploymentCountry && wifi && !wifi.country) {
-        wifi = { ...wifi, country: deploymentCountry };
-      } else if (deploymentCountry && !wifi) {
-        wifi = { country: deploymentCountry };
-      }
-
-      const mtConfig = {
-        host: deviceConfig.device.host,
-        username: deviceConfig.device.username,
-        password: deviceConfig.device.password,
-        identity: deviceConfig.identity,  // Optional explicit identity override
-        managementInterfaces: deviceConfig.managementInterfaces || ['ether1'],
-        disabledInterfaces: deviceConfig.disabledInterfaces || [],
-        wifi,  // WiFi optimization settings (with deployment country merged)
-        syslog: deploymentSyslog,  // Syslog configuration (deployment-level)
-        ssids: deviceConfig.ssids
-      };
-
+      const mtConfig = buildMtConfig(deviceConfig);
       try {
         await configureMikroTik(mtConfig);
         return { index: index + 1, host: mtConfig.host, success: true };
@@ -187,38 +344,22 @@ async function main() {
     results.push(...allResults);
 
   } else {
+    // Standard sequential deployment (non-CAPsMAN)
     console.log('Applying configurations sequentially...\n');
 
     for (let i = 0; i < devices.length; i++) {
       const deviceConfig = devices[i];
-
-      // Merge deployment-level country into device wifi config
-      let wifi = deviceConfig.wifi;
-      if (deploymentCountry && wifi && !wifi.country) {
-        wifi = { ...wifi, country: deploymentCountry };
-      } else if (deploymentCountry && !wifi) {
-        wifi = { country: deploymentCountry };
-      }
-
-      const mtConfig = {
-        host: deviceConfig.device.host,
-        username: deviceConfig.device.username,
-        password: deviceConfig.device.password,
-        identity: deviceConfig.identity,  // Optional explicit identity override
-        managementInterfaces: deviceConfig.managementInterfaces || ['ether1'],
-        disabledInterfaces: deviceConfig.disabledInterfaces || [],
-        wifi,  // WiFi optimization settings (with deployment country merged)
-        syslog: deploymentSyslog,  // Syslog configuration (deployment-level)
-        ssids: deviceConfig.ssids
-      };
+      const mtConfig = buildMtConfig(deviceConfig);
 
       console.log(`\n${'='.repeat(60)}`);
       console.log(`[${i + 1}/${devices.length}] Configuring device: ${mtConfig.host}`);
       console.log(`${'='.repeat(60)}`);
-      console.log(`SSIDs to configure: ${deviceConfig.ssids.length}`);
-      deviceConfig.ssids.forEach(ssid => {
-        console.log(`  - ${ssid.ssid} (VLAN ${ssid.vlan}, Bands: ${ssid.bands.join(', ')})`);
-      });
+      if (mtConfig.ssids && mtConfig.ssids.length > 0) {
+        console.log(`SSIDs to configure: ${mtConfig.ssids.length}`);
+        mtConfig.ssids.forEach(ssid => {
+          console.log(`  - ${ssid.ssid} (VLAN ${ssid.vlan}, Bands: ${ssid.bands.join(', ')})`);
+        });
+      }
       console.log('');
 
       try {
@@ -253,16 +394,27 @@ async function main() {
 
   if (successful.length > 0) {
     console.log('\n✓ Successfully configured:');
-    successful.forEach(r => console.log(`  - Device ${r.index}: ${r.host}`));
+    successful.forEach(r => {
+      const roleStr = r.role ? ` (${r.role})` : '';
+      console.log(`  - Device ${r.index}: ${r.host}${roleStr}`);
+    });
   }
 
   if (failed.length > 0) {
     console.log('\n✗ Failed to configure:');
-    failed.forEach(r => console.log(`  - Device ${r.index}: ${r.host} - ${r.error}`));
+    failed.forEach(r => {
+      const roleStr = r.role ? ` (${r.role})` : '';
+      console.log(`  - Device ${r.index}: ${r.host}${roleStr} - ${r.error}`);
+    });
     process.exit(1);
   }
 
-  console.log('\n✓ All devices configured successfully!');
+  if (capsmanMode) {
+    console.log('\n✓ CAPsMAN deployment configured successfully!');
+    console.log('  CAPs should now be connected to the controller.');
+  } else {
+    console.log('\n✓ All devices configured successfully!');
+  }
 }
 
 main();

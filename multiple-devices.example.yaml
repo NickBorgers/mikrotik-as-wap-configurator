@@ -187,3 +187,117 @@ devices:
           - 5GHz
         roaming:
           fastTransition: true
+
+# ============================================================================
+# CAPsMAN DEPLOYMENT EXAMPLE
+# ============================================================================
+# Below is an example CAPsMAN deployment with a controller and CAPs.
+# CAPsMAN provides coordinated 802.11r/k/v roaming across all access points.
+#
+# Benefits over standalone mode:
+#   - 802.11r: Coordinated fast BSS transition (shared PMK keys)
+#   - 802.11k: Neighbor reports (APs tell clients about each other)
+#   - 802.11v: Client steering (APs proactively move clients to better APs)
+#
+# Network requirements:
+#   - CAPs need IP connectivity to controller (L2 or L3)
+#   - For cross-VLAN: allow UDP 5246-5247 to controller from CAP VLANs
+#   - DTLS encryption secures CAP-to-controller traffic
+#
+# To use this example, comment out the standalone devices above and
+# uncomment the CAPsMAN deployment below.
+# ============================================================================
+
+# --- CAPsMAN Example (uncomment to use) ---
+
+# # Shared SSID configurations - defined once, distributed to all CAPs
+# ssids:
+#   - ssid: MyNetwork
+#     passphrase: secure-password-here
+#     vlan: 100
+#     bands:
+#       - 2.4GHz
+#       - 5GHz
+#     roaming:
+#       fastTransition: true  # 802.11r - fast BSS transition
+#       rrm: true             # 802.11k - neighbor reports
+#       wnm: true             # 802.11v - client steering
+#       transitionThreshold: -80  # dBm threshold for steering
+#
+#   - ssid: IoT-Devices
+#     passphrase: iot-password-here
+#     vlan: 100
+#     bands:
+#       - 2.4GHz
+#     # No roaming - stationary devices
+#
+#   - ssid: Guest-WiFi
+#     passphrase: guest-password-here
+#     vlan: 200
+#     bands:
+#       - 2.4GHz
+#       - 5GHz
+#
+# devices:
+#   # CAPsMAN Controller (also acts as an AP)
+#   - device:
+#       host: indoor-wap-south.example.com
+#       username: admin
+#       password: admin
+#     role: controller
+#     capsman:
+#       certificate: auto              # Auto-generate certificate
+#       requirePeerCertificate: false  # Don't require CAP certificates
+#     managementInterfaces:
+#       - ether1
+#     disabledInterfaces:
+#       - ether2
+#     wifi:
+#       2.4GHz:
+#         channel: 1
+#         txPower: 15
+#         width: 20mhz
+#       5GHz:
+#         channel: 36
+#         txPower: 18
+#         width: 20/40/80mhz
+#
+#   # CAP 1 - Different channels to avoid interference
+#   - device:
+#       host: indoor-wap-north.example.com
+#       username: admin
+#       password: admin
+#     role: cap
+#     cap:
+#       controllerAddresses:
+#         - 10.212.254.51  # Controller's IP (can be on different VLAN)
+#       certificate: request
+#       lockToController: true
+#     managementInterfaces:
+#       - ether1
+#     disabledInterfaces:
+#       - ether2
+#     wifi:
+#       2.4GHz:
+#         channel: 6      # Different from controller
+#       5GHz:
+#         channel: 52     # Different from controller
+#
+#   # CAP 2 - Third set of non-overlapping channels
+#   - device:
+#       host: outdoor-wap.example.com
+#       username: admin
+#       password: admin
+#     role: cap
+#     cap:
+#       controllerAddresses:
+#         - 10.212.254.51
+#       certificate: request
+#       lockToController: true
+#     managementInterfaces:
+#       - ether1
+#     wifi:
+#       2.4GHz:
+#         channel: 11     # Complete the 1/6/11 set
+#       5GHz:
+#         channel: 149    # Different DFS-free channel
