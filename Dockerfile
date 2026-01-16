@@ -19,8 +19,10 @@ WORKDIR /app
 # Copy application files
 COPY --from=builder /app/node_modules ./node_modules
 COPY apply-config.js ./
+COPY apply-multiple-devices.js ./
 COPY mikrotik-no-vlan-filtering.js ./
 COPY config.example.yaml ./
+COPY multiple-devices.example.yaml ./
 COPY diag ./diag
 
 # Create volume mount point for config
