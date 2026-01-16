@@ -145,6 +145,11 @@ async function main() {
   // Check for CAPsMAN deployment
   const capsmanMode = isCapsmanDeployment(devices);
   const deploymentSsids = config.ssids || [];  // Deployment-level SSIDs for CAPsMAN
+  const capsmanVlan = config.capsmanVlan || null;  // Deployment-level CAPsMAN VLAN config
+
+  if (capsmanVlan) {
+    console.log(`CAPsMAN VLAN: ${capsmanVlan.vlan} (Network: ${capsmanVlan.network || 'unspecified'})`);
+  }
 
   if (capsmanMode) {
     const controller = devices.find(d => d.role === 'controller');
@@ -214,7 +219,9 @@ async function main() {
       ssids,
       role,
       capsman: deviceConfig.capsman,  // Controller settings
-      cap: deviceConfig.cap           // CAP settings
+      cap: deviceConfig.cap,          // CAP settings
+      capsmanVlan,                    // Deployment-level CAPsMAN VLAN config
+      capsmanAddress: deviceConfig.capsmanAddress  // Per-device static IP on CAPsMAN VLAN
     };
   }
 

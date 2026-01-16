@@ -205,12 +205,24 @@ devices:
 #   - DTLS encryption secures CAP-to-controller traffic
 #   - Controller addresses use IP format (FQDNs are resolved automatically)
 #
+# CAPsMAN VLAN (optional but recommended for wifi-qcom devices):
+#   - Dedicated L2 VLAN for CAP↔Controller traffic (solves L3 issues)
+#   - Static IPs on each device (no DHCP needed, predictable addressing)
+#   - Firewall rules block admin access via CAPsMAN VLAN (security)
+#   - Only CAPWAP traffic (UDP 5246-5247) allowed on this VLAN
+#
 # To use this example, comment out the standalone devices above and
 # uncomment the CAPsMAN deployment below.
 # ============================================================================
 
 # --- CAPsMAN Example (uncomment to use) ---
 
+# # CAPsMAN management VLAN - dedicated L2 for CAP↔Controller traffic
+# # This solves wifi-qcom L3 connectivity issues by ensuring L2 connectivity
+# capsmanVlan:
+#   vlan: 2525                    # VLAN ID for CAPsMAN traffic
+#   network: 10.252.50.0/24       # Network for static IP addressing
+#
 # # Shared SSID configurations - defined once, distributed to all CAPs
 # ssids:
 #   - ssid: MyNetwork
@@ -246,6 +258,7 @@ devices:
 #       username: admin
 #       password: admin
 #     role: controller
+#     capsmanAddress: 10.252.50.1      # Static IP on CAPsMAN VLAN
 #     capsman:
 #       certificate: auto              # Auto-generate certificate
 #       requirePeerCertificate: false  # Don't require CAP certificates
@@ -269,9 +282,10 @@ devices:
 #       username: admin
 #       password: admin
 #     role: cap
+#     capsmanAddress: 10.252.50.2      # Static IP on CAPsMAN VLAN
 #     cap:
 #       controllerAddresses:
-#         - 192.168.88.1  # Controller IP (FQDNs resolved automatically)
+#         - 10.252.50.1  # Controller's CAPsMAN VLAN IP
 #     managementInterfaces:
 #       - ether1
 #     disabledInterfaces:
@@ -288,9 +302,10 @@ devices:
 #       username: admin
 #       password: admin
 #     role: cap
+#     capsmanAddress: 10.252.50.3      # Static IP on CAPsMAN VLAN
 #     cap:
 #       controllerAddresses:
-#         - 192.168.88.1  # Controller IP
+#         - 10.252.50.1  # Controller's CAPsMAN VLAN IP
 #     managementInterfaces:
 #       - ether1
 #     wifi:
