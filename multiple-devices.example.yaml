@@ -270,7 +270,7 @@ devices:
 #     role: cap
 #     cap:
 #       controllerAddresses:
-#         - 10.212.254.51  # Controller's IP (can be on different VLAN)
+#         - indoor-wap-south.example.com  # Controller's FQDN (can be on different VLAN)
 #       certificate: request
 #       lockToController: true
 #     managementInterfaces:
@@ -291,7 +291,7 @@ devices:
 #     role: cap
 #     cap:
 #       controllerAddresses:
-#         - 10.212.254.51
+#         - indoor-wap-south.example.com  # Controller's FQDN
 #       certificate: request
 #       lockToController: true
 #     managementInterfaces:

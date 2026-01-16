@@ -126,8 +126,8 @@ ssids:
 # Uncomment and configure for CAP mode:
 #
 # cap:
-#   controllerAddresses:           # Controller IP(s) - required for L3/cross-VLAN
-#     - 10.212.254.1
+#   controllerAddresses:           # Controller address(es) - FQDN or IP
+#     - capsman-controller.example.com
 #   certificate: request           # Request certificate from controller
 #   lockToController: true         # Only connect to specified controller
 #

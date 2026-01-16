@@ -1,0 +1,103 @@
+# MikroTik CAPsMAN Test Deployment
+# Last updated: 2026-01-16
+# Mode: CAPsMAN (controller + CAP)
+#
+# Testing 802.11r/k/v coordinated roaming with:
+#   Controller: outdoor-wap-north (channel 6/149)
+#   CAP: far-bedroom-wap (channel 1/100)
+#
+# Prerequisites:
+#   - Firewall: Allow UDP 5246-5247 from far-bedroom-wap's VLAN to controller IP
+#   - Both devices reachable via SSH
+
+# Regulatory domain - applies to all devices
+country: United States
+
+# Log forwarding to Gravwell
+syslog:
+  server: 10.212.10.20
+  port: 1517
+  topics:
+    - wireless
+
+# Shared SSIDs - defined once, distributed to all CAPs via CAPsMAN
+ssids:
+  - ssid: PartlyPrimary
+    passphrase: this is a password
+    vlan: 100
+    bands:
+      - 2.4GHz
+      - 5GHz
+    roaming:
+      fastTransition: true   # 802.11r - fast BSS transition
+      rrm: true              # 802.11k - neighbor reports
+      wnm: true              # 802.11v - client steering
+
+  - ssid: PartlySonos
+    passphrase: this is a password
+    vlan: 100
+    bands:
+      - 2.4GHz
+    # No roaming - Sonos devices are stationary
+
+  - ssid: PartlyIoT
+    passphrase: '!^mt6Hr6%8r3GV'
+    vlan: 100
+    bands:
+      - 2.4GHz
+    # No roaming - IoT devices are stationary
+
+  - ssid: PartlyWork
+    passphrase: Q#F4Gm8jFM
+    vlan: 50
+    bands:
+      - 2.4GHz
+      - 5GHz
+    roaming:
+      fastTransition: true
+      rrm: true
+      wnm: true
+
+devices:
+  # CAPsMAN Controller (also acts as AP)
+  - device:
+      host: outdoor-wap-north.nickborgers.net
+      username: admin
+      password: admin
+    role: controller
+    capsman:
+      certificate: auto
+    managementInterfaces:
+      - ether1
+    disabledInterfaces:
+      - ether2
+    wifi:
+      2.4GHz:
+        channel: 6
+        width: 20mhz
+      5GHz:
+        channel: 149
+        width: 20/40/80mhz
+
+  # CAP - receives config from controller
+  - device:
+      host: far-bedroom-wap.nickborgers.net
+      username: admin
+      password: admin
+    role: cap
+    cap:
+      controllerAddresses:
+        - outdoor-wap-north.nickborgers.net
+      certificate: request
+      lockToController: true
+    managementInterfaces:
+      - ether1
+    disabledInterfaces:
+      - ether2
+    wifi:
+      2.4GHz:
+        channel: 1
+        width: 20mhz
+      5GHz:
+        channel: 100
+        width: 20/40/80mhz
