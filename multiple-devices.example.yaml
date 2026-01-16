@@ -203,6 +203,7 @@ devices:
 #   - CAPs need IP connectivity to controller (L2 or L3)
 #   - For cross-VLAN: allow UDP 5246-5247 to controller from CAP VLANs
 #   - DTLS encryption secures CAP-to-controller traffic
+#   - Controller addresses use IP format (FQDNs are resolved automatically)
 #
 # To use this example, comment out the standalone devices above and
 # uncomment the CAPsMAN deployment below.
@@ -270,9 +271,7 @@ devices:
 #     role: cap
 #     cap:
 #       controllerAddresses:
-#         - indoor-wap-south.example.com  # Controller's FQDN (can be on different VLAN)
-#       certificate: request
-#       lockToController: true
+#         - 192.168.88.1  # Controller IP (FQDNs resolved automatically)
 #     managementInterfaces:
 #       - ether1
 #     disabledInterfaces:
@@ -291,9 +290,7 @@ devices:
 #     role: cap
 #     cap:
 #       controllerAddresses:
-#         - indoor-wap-south.example.com  # Controller's FQDN
-#       certificate: request
-#       lockToController: true
+#         - 192.168.88.1  # Controller IP
 #     managementInterfaces:
 #       - ether1
 #     wifi:

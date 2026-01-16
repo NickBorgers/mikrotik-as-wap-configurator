@@ -680,9 +680,34 @@ async function configureCap(config = {}) {
 
     // Step 6: Enable CAP mode
     console.log('\n=== Step 6: Enabling CAP Mode ===');
-    const addressList = controllerAddresses.join(',');
-    const certificate = capConfig.certificate || 'request';
-    const lockToController = capConfig.lockToController ? 'yes' : 'no';
+
+    // Resolve FQDNs to IP addresses (RouterOS caps-man-addresses only accepts IPs)
+    const dns = require('dns').promises;
+    const resolvedAddresses = [];
+    for (const addr of controllerAddresses) {
+      // Check if already an IP address
+      if (/^\d+\.\d+\.\d+\.\d+$/.test(addr)) {
+        resolvedAddresses.push(addr);
+        console.log(`✓ Controller IP: ${addr}`);
+      } else {
+        // Resolve FQDN to IP
+        try {
+          const result = await dns.lookup(addr);
+          resolvedAddresses.push(result.address);
+          console.log(`✓ Resolved ${addr} → ${result.address}`);
+        } catch (e) {
+          console.log(`⚠️  Could not resolve ${addr}: ${e.message}`);
+        }
+      }
+    }
+
+    if (resolvedAddresses.length === 0) {
+      console.log('✗ No valid controller addresses resolved');
+      await mt.close();
+      return false;
+    }
+
+    const addressList = resolvedAddresses.join(',');
 
     try {
       // First disable CAP if it was enabled (clean state)
@@ -690,16 +715,15 @@ async function configureCap(config = {}) {
     } catch (e) { /* ignore */ }
 
     try {
+      // Enable CAP with controller addresses and discovery interface
+      // Note: wifi-qcom only supports caps-man-addresses and discovery-interfaces
       await mt.exec(
         `${capPath} set enabled=yes ` +
         `caps-man-addresses=${addressList} ` +
-        `certificate=${certificate} ` +
-        `lock-to-caps-man=${lockToController}`
+        `discovery-interfaces=bridge`
       );
       console.log(`✓ CAP enabled, connecting to: ${addressList}`);
-      if (capConfig.lockToController) {
-        console.log('✓ Locked to specified controller');
-      }
+      console.log('✓ Discovery interface: bridge');
     } catch (e) {
       console.log(`✗ Failed to enable CAP: ${e.message}`);
     }

@@ -126,11 +126,12 @@ ssids:
 # Uncomment and configure for CAP mode:
 #
 # cap:
-#   controllerAddresses:           # Controller address(es) - FQDN or IP
-#     - capsman-controller.example.com
-#   certificate: request           # Request certificate from controller
-#   lockToController: true         # Only connect to specified controller
+#   controllerAddresses:           # Controller IP address(es) - FQDNs resolved automatically
+#     - 192.168.88.1
 #
 # CAP devices receive WiFi configuration from the controller.
 # Local wifi settings (channel, txPower) override controller defaults.
 # SSIDs are NOT needed in CAP config - they come from the controller.
+#
+# Note: RouterOS wifi-qcom requires IP addresses for caps-man-addresses.
+# FQDNs are resolved to IPs automatically before configuration.
