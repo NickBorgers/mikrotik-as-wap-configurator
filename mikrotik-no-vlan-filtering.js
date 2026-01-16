@@ -477,6 +477,236 @@ async function applyBandSettings(mt, band, interfaceName, bandConfig, wifiPath) 
 // END SHARED SETUP HELPERS
 // ============================================================================
 
+// ============================================================================
+// WIFI-QCOM CAPSMAN HELPERS
+// ============================================================================
+
+/**
+ * Discover CAP-operated interfaces on a CAPsMAN controller
+ * For wifi-qcom, these interfaces appear after CAPs connect with naming like:
+ * - "<cap-identity>-2g" for 2.4GHz
+ * - "<cap-identity>-5g" for 5GHz
+ *
+ * @param {MikroTikSSH} mt - Connected SSH session
+ * @param {string} wifiPath - WiFi command path (/interface/wifi or /interface/wifiwave2)
+ * @returns {Array<{name: string, band: string}>} - List of CAP interfaces with their bands
+ */
+async function discoverCapInterfaces(mt, wifiPath) {
+  const capInterfaces = [];
+
+  try {
+    // List all WiFi interfaces
+    const output = await mt.exec(`${wifiPath} print terse`);
+
+    // Parse each line for interface names
+    for (const line of output.split('\n')) {
+      if (!line.trim()) continue;
+
+      // Extract interface name
+      const nameMatch = line.match(/name="?([^"\s]+)"?/);
+      if (!nameMatch) continue;
+
+      const name = nameMatch[1];
+
+      // Skip local interfaces (wifi1, wifi2, wifi1-ssid2, etc.)
+      if (/^wifi\d/.test(name)) continue;
+
+      // CAP interfaces end with -2g or -5g
+      let band = null;
+      if (name.endsWith('-2g')) {
+        band = '2.4GHz';
+      } else if (name.endsWith('-5g')) {
+        band = '5GHz';
+      }
+
+      if (band) {
+        capInterfaces.push({ name, band });
+      }
+    }
+  } catch (e) {
+    console.log(`⚠️  Could not discover CAP interfaces: ${e.message}`);
+  }
+
+  return capInterfaces;
+}
+
+/**
+ * Configure CAP-operated interfaces on a CAPsMAN controller (wifi-qcom specific)
+ * This configures the interfaces directly after CAPs have connected.
+ *
+ * @param {Object} config - Controller configuration
+ * @returns {boolean} - Success status
+ */
+async function configureCapInterfacesOnController(config = {}) {
+  const mt = new MikroTikSSH(
+    config.host || '192.168.88.1',
+    config.username || 'admin',
+    config.password || 'admin'
+  );
+
+  try {
+    await mt.connect();
+
+    console.log('\n========================================');
+    console.log('Configuring CAP Interfaces (wifi-qcom)');
+    console.log('========================================\n');
+
+    const ssids = config.ssids || [];
+    const wifiConfig = config.wifi || {};
+    const country = wifiConfig.country || 'United States';
+
+    if (ssids.length === 0) {
+      console.log('⚠️  No SSIDs configured');
+      await mt.close();
+      return false;
+    }
+
+    // Detect WiFi package
+    const wifiPackage = await detectWifiPackage(mt);
+    if (!wifiPackage) {
+      console.log('✗ Could not detect WiFi package');
+      await mt.close();
+      return false;
+    }
+
+    // wifiwave2 uses provisioning rules - CAP interfaces are auto-configured
+    if (wifiPackage === 'wifiwave2') {
+      console.log('ℹ️  wifiwave2 detected - provisioning rules handle CAP interface configuration');
+      console.log('✓ Skipping Phase 2.5 (not needed for wifiwave2)');
+      await mt.close();
+      return true;
+    }
+
+    const wifiPath = getWifiPath(wifiPackage);
+
+    // Discover CAP interfaces
+    console.log('=== Discovering CAP Interfaces ===');
+    const capInterfaces = await discoverCapInterfaces(mt, wifiPath);
+
+    if (capInterfaces.length === 0) {
+      console.log('⚠️  No CAP interfaces found. CAPs may not have connected yet.');
+      console.log('    Wait for CAPs to connect and run this again.');
+      await mt.close();
+      return false;
+    }
+
+    console.log(`Found ${capInterfaces.length} CAP interface(s):`);
+    for (const iface of capInterfaces) {
+      console.log(`  - ${iface.name} (${iface.band})`);
+    }
+
+    // Group SSIDs by band
+    const ssidsByBand = {
+      '2.4GHz': ssids.filter(s => s.bands && s.bands.includes('2.4GHz')),
+      '5GHz': ssids.filter(s => s.bands && s.bands.includes('5GHz'))
+    };
+
+    // Configure each CAP interface
+    console.log('\n=== Configuring CAP Interfaces ===');
+
+    for (const capInterface of capInterfaces) {
+      const bandSsids = ssidsByBand[capInterface.band];
+
+      if (!bandSsids || bandSsids.length === 0) {
+        console.log(`⚠️  No SSIDs configured for ${capInterface.band} (${capInterface.name})`);
+        continue;
+      }
+
+      // Configure primary SSID on master interface
+      const primarySsid = bandSsids[0];
+      console.log(`\nConfiguring ${capInterface.name} with SSID: ${primarySsid.ssid}`);
+
+      await configureWifiInterface(
+        mt, wifiPath, capInterface.name, primarySsid, country
+      );
+
+      // Create virtual interfaces for additional SSIDs
+      for (let i = 1; i < bandSsids.length; i++) {
+        const additionalSsid = bandSsids[i];
+        const virtualName = `${capInterface.name}-ssid${i + 1}`;
+
+        console.log(`\nCreating virtual interface ${virtualName} for SSID: ${additionalSsid.ssid}`);
+
+        // Create virtual interface
+        try {
+          await mt.exec(`${wifiPath} add master-interface=${capInterface.name} name="${virtualName}"`);
+          console.log(`  ✓ Created virtual interface ${virtualName}`);
+        } catch (e) {
+          if (e.message.includes('already have') || e.message.includes('exists')) {
+            console.log(`  ✓ Virtual interface ${virtualName} already exists`);
+          } else {
+            console.log(`  ⚠️  Could not create ${virtualName}: ${e.message}`);
+            continue;
+          }
+        }
+
+        // Small delay for interface registration
+        await new Promise(resolve => setTimeout(resolve, 300));
+
+        await configureWifiInterface(
+          mt, wifiPath, virtualName, additionalSsid, country
+        );
+      }
+    }
+
+    console.log('\n========================================');
+    console.log('✓ CAP Interface Configuration Complete');
+    console.log('========================================\n');
+
+    await mt.close();
+    return true;
+  } catch (error) {
+    console.error('\n✗ CAP Interface Configuration Error:', error.message);
+    await mt.close();
+    throw error;
+  }
+}
+
+/**
+ * Configure a single WiFi interface with SSID, security, and datapath
+ * Used for both standalone and CAPsMAN CAP interface configuration
+ *
+ * @param {MikroTikSSH} mt - Connected SSH session
+ * @param {string} wifiPath - WiFi command path
+ * @param {string} interfaceName - Interface name to configure
+ * @param {Object} ssidConfig - SSID configuration {ssid, passphrase, vlan, roaming}
+ * @param {string} country - Country code for WiFi
+ */
+async function configureWifiInterface(mt, wifiPath, interfaceName, ssidConfig, country) {
+  const { ssid, passphrase, vlan, roaming } = ssidConfig;
+
+  const useFT = roaming?.fastTransition === true;
+  const escapedSsid = escapeMikroTik(ssid);
+  const escapedPassphrase = escapeMikroTik(passphrase);
+
+  // Build configuration command
+  // For wifi-qcom, use security.ft=yes instead of ft-psk auth type
+  let cmd = `${wifiPath} set ${interfaceName} ` +
+    `configuration.ssid="${escapedSsid}" ` +
+    `configuration.country="${country}" ` +
+    `security.authentication-types=wpa2-psk ` +
+    `security.passphrase="${escapedPassphrase}" ` +
+    `datapath.bridge=bridge datapath.vlan-id=${vlan}`;
+
+  if (useFT) {
+    cmd += ` security.ft=yes security.ft-over-ds=yes`;
+  }
+
+  cmd += ` disabled=no`;
+
+  try {
+    await mt.exec(cmd);
+    console.log(`  ✓ Configured ${interfaceName}: SSID="${ssid}", VLAN=${vlan}${useFT ? ', 802.11r=yes' : ''}`);
+  } catch (e) {
+    console.log(`  ✗ Failed to configure ${interfaceName}: ${e.message}`);
+    throw e;
+  }
+}
+
+// ============================================================================
+// END WIFI-QCOM CAPSMAN HELPERS
+// ============================================================================
+
 /**
  * Configure LACP bond with deterministic MAC address for DHCP static leases
  * Uses forced-mac-address from primary interface to ensure consistent MAC
@@ -718,93 +948,105 @@ async function configureController(config = {}) {
     // Step 4.5: Configure CAPsMAN VLAN (if specified)
     await configureCapsmanVlan(mt, config);
 
-    // Step 5: Clean up old CAPsMAN configurations
-    console.log('\n=== Cleaning Up Old CAPsMAN Configurations ===');
-    try {
-      await mt.exec(`${capsmanPath}/provisioning remove [find]`);
-      console.log('✓ Removed old provisioning rules');
-    } catch (e) {
-      if (!e.message.includes('no such item')) {
-        console.log(`⚠️  Provisioning cleanup: ${e.message}`);
-      }
-    }
-
-    try {
-      await mt.exec(`${capsmanPath}/configuration remove [find]`);
-      console.log('✓ Removed old master configurations');
-    } catch (e) {
-      if (!e.message.includes('no such item')) {
-        console.log(`⚠️  Configuration cleanup: ${e.message}`);
-      }
-    }
-
-    // Step 6: Create master configurations for each SSID
-    console.log('\n=== Creating Master Configurations ===');
     const wifiConfig = config.wifi || {};
     const country = wifiConfig.country || 'United States';
 
-    for (const ssidConfig of ssids) {
-      const { ssid, passphrase, vlan, bands, roaming } = ssidConfig;
-
-      if (!ssid || !passphrase || !vlan || !bands || bands.length === 0) {
-        console.log(`⚠️  Skipping incomplete SSID: ${ssid || 'unnamed'}`);
-        continue;
-      }
-
-      console.log(`\nConfiguring SSID: ${ssid}`);
-
-      const useFT = roaming?.fastTransition === true;
-      const useRRM = roaming?.rrm === true;
-      const useWNM = roaming?.wnm === true;
-      const transitionThreshold = roaming?.transitionThreshold || -80;
-
-      const authTypes = useFT ? 'wpa2-psk,ft-psk' : 'wpa2-psk';
-      const escapedSsid = escapeMikroTik(ssid);
-      const escapedPassphrase = escapeMikroTik(passphrase);
-
-      for (const band of bands) {
-        const bandSuffix = band === '2.4GHz' ? '2g' : '5g';
-        const configName = `cfg-${ssid.replace(/[^a-zA-Z0-9]/g, '')}-${bandSuffix}`;
-        const bandSpec = band === '2.4GHz' ? '2ghz-ax,2ghz-n' : '5ghz-ax,5ghz-n,5ghz-ac';
-
-        const bandConfig = wifiConfig[band] || {};
-        const channelCmd = bandConfig.channel ?
-          `channel.frequency=${band === '2.4GHz' ? CHANNEL_FREQ_24GHZ[bandConfig.channel] : CHANNEL_FREQ_5GHZ[bandConfig.channel]}` : '';
-        const txPowerCmd = bandConfig.txPower ? `channel.tx-power=${bandConfig.txPower}` : '';
-        const widthCmd = bandConfig.width ? `channel.width=${bandConfig.width}` : '';
-
-        let configCmd = `${capsmanPath}/configuration add ` +
-          `name="${configName}" ssid="${escapedSsid}" country="${country}" ` +
-          `security.authentication-types=${authTypes} security.passphrase="${escapedPassphrase}" ` +
-          `datapath.bridge=bridge datapath.vlan-id=${vlan}`;
-
-        if (useFT) configCmd += ` security.ft=yes security.ft-over-ds=yes`;
-        if (useRRM) configCmd += ` steering.rrm=yes`;
-        if (useWNM) configCmd += ` steering.wnm=yes steering.transition-threshold=${transitionThreshold}`;
-        if (channelCmd) configCmd += ` ${channelCmd}`;
-        if (txPowerCmd) configCmd += ` ${txPowerCmd}`;
-        if (widthCmd) configCmd += ` ${widthCmd}`;
-
-        try {
-          await mt.exec(configCmd);
-          console.log(`  ✓ Created master config: ${configName} (${band})`);
-          if (useFT) console.log(`    802.11r: enabled`);
-          if (useRRM) console.log(`    802.11k: enabled`);
-          if (useWNM) console.log(`    802.11v: enabled (threshold: ${transitionThreshold} dBm)`);
-        } catch (e) {
-          console.log(`  ✗ Failed to create config ${configName}: ${e.message}`);
-        }
-
-        try {
-          await mt.exec(
-            `${capsmanPath}/provisioning add supported-bands=${bandSpec} ` +
-            `master-configuration="${configName}" action=create-dynamic-enabled`
-          );
-          console.log(`  ✓ Created provisioning rule for ${bandSpec}`);
-        } catch (e) {
-          console.log(`  ⚠️  Provisioning rule: ${e.message}`);
+    // Steps 5-6 are only for wifiwave2 devices
+    // wifi-qcom doesn't support configuration/provisioning objects
+    // Instead, CAP interfaces are configured directly after CAPs connect (Phase 2.5)
+    if (wifiPackage === 'wifiwave2') {
+      // Step 5: Clean up old CAPsMAN configurations
+      console.log('\n=== Cleaning Up Old CAPsMAN Configurations ===');
+      try {
+        await mt.exec(`${capsmanPath}/provisioning remove [find]`);
+        console.log('✓ Removed old provisioning rules');
+      } catch (e) {
+        if (!e.message.includes('no such item')) {
+          console.log(`⚠️  Provisioning cleanup: ${e.message}`);
         }
       }
+
+      try {
+        await mt.exec(`${capsmanPath}/configuration remove [find]`);
+        console.log('✓ Removed old master configurations');
+      } catch (e) {
+        if (!e.message.includes('no such item')) {
+          console.log(`⚠️  Configuration cleanup: ${e.message}`);
+        }
+      }
+
+      // Step 6: Create master configurations for each SSID
+      console.log('\n=== Creating Master Configurations ===');
+
+      for (const ssidConfig of ssids) {
+        const { ssid, passphrase, vlan, bands, roaming } = ssidConfig;
+
+        if (!ssid || !passphrase || !vlan || !bands || bands.length === 0) {
+          console.log(`⚠️  Skipping incomplete SSID: ${ssid || 'unnamed'}`);
+          continue;
+        }
+
+        console.log(`\nConfiguring SSID: ${ssid}`);
+
+        const useFT = roaming?.fastTransition === true;
+        const useRRM = roaming?.rrm === true;
+        const useWNM = roaming?.wnm === true;
+        const transitionThreshold = roaming?.transitionThreshold || -80;
+
+        const authTypes = useFT ? 'wpa2-psk,ft-psk' : 'wpa2-psk';
+        const escapedSsid = escapeMikroTik(ssid);
+        const escapedPassphrase = escapeMikroTik(passphrase);
+
+        for (const band of bands) {
+          const bandSuffix = band === '2.4GHz' ? '2g' : '5g';
+          const configName = `cfg-${ssid.replace(/[^a-zA-Z0-9]/g, '')}-${bandSuffix}`;
+          const bandSpec = band === '2.4GHz' ? '2ghz-ax,2ghz-n' : '5ghz-ax,5ghz-n,5ghz-ac';
+
+          const bandConfig = wifiConfig[band] || {};
+          const channelCmd = bandConfig.channel ?
+            `channel.frequency=${band === '2.4GHz' ? CHANNEL_FREQ_24GHZ[bandConfig.channel] : CHANNEL_FREQ_5GHZ[bandConfig.channel]}` : '';
+          const txPowerCmd = bandConfig.txPower ? `channel.tx-power=${bandConfig.txPower}` : '';
+          const widthCmd = bandConfig.width ? `channel.width=${bandConfig.width}` : '';
+
+          let configCmd = `${capsmanPath}/configuration add ` +
+            `name="${configName}" ssid="${escapedSsid}" country="${country}" ` +
+            `security.authentication-types=${authTypes} security.passphrase="${escapedPassphrase}" ` +
+            `datapath.bridge=bridge datapath.vlan-id=${vlan}`;
+
+          if (useFT) configCmd += ` security.ft=yes security.ft-over-ds=yes`;
+          if (useRRM) configCmd += ` steering.rrm=yes`;
+          if (useWNM) configCmd += ` steering.wnm=yes steering.transition-threshold=${transitionThreshold}`;
+          if (channelCmd) configCmd += ` ${channelCmd}`;
+          if (txPowerCmd) configCmd += ` ${txPowerCmd}`;
+          if (widthCmd) configCmd += ` ${widthCmd}`;
+
+          try {
+            await mt.exec(configCmd);
+            console.log(`  ✓ Created master config: ${configName} (${band})`);
+            if (useFT) console.log(`    802.11r: enabled`);
+            if (useRRM) console.log(`    802.11k: enabled`);
+            if (useWNM) console.log(`    802.11v: enabled (threshold: ${transitionThreshold} dBm)`);
+          } catch (e) {
+            console.log(`  ✗ Failed to create config ${configName}: ${e.message}`);
+          }
+
+          try {
+            await mt.exec(
+              `${capsmanPath}/provisioning add supported-bands=${bandSpec} ` +
+              `master-configuration="${configName}" action=create-dynamic-enabled`
+            );
+            console.log(`  ✓ Created provisioning rule for ${bandSpec}`);
+          } catch (e) {
+            console.log(`  ⚠️  Provisioning rule: ${e.message}`);
+          }
+        }
+      }
+    } else {
+      // wifi-qcom: Skip configuration/provisioning objects
+      console.log('\n=== wifi-qcom CAPsMAN Mode ===');
+      console.log('ℹ️  wifi-qcom does not use configuration/provisioning objects.');
+      console.log('ℹ️  CAP interfaces will be configured after CAPs connect (Phase 2.5).');
+      console.log(`ℹ️  SSIDs to configure: ${ssids.map(s => s.ssid).join(', ')}`);
     }
 
     // Step 7: Enable CAPsMAN service
@@ -851,79 +1093,45 @@ async function configureController(config = {}) {
       validationErrors.push(`Could not verify CAPsMAN status: ${e.message}`);
     }
 
-    // Check provisioning rules exist (critical for wifiwave2, indicates problem for wifi-qcom)
-    try {
-      const provisioningOutput = await mt.exec(`${capsmanPath}/provisioning print`);
-
-      // MikroTik outputs errors to stdout, so check for error patterns in output
-      if (provisioningOutput.includes('bad command name')) {
-        validationErrors.push(
-          `CAPsMAN provisioning command not available (${wifiPackage}). ` +
-          'This device may require a different CAPsMAN configuration approach'
-        );
-      } else {
-        // Count non-empty lines that aren't headers
+    // Validation differs by package type
+    if (wifiPackage === 'wifiwave2') {
+      // wifiwave2: Check provisioning rules and configurations exist
+      try {
+        const provisioningOutput = await mt.exec(`${capsmanPath}/provisioning print`);
         const hasProvisioningRules = provisioningOutput.split('\n')
           .filter(line => line.trim() && !line.includes('Flags:') && !line.includes('Columns:') && !line.includes('#')).length > 0;
 
         if (!hasProvisioningRules) {
-          if (wifiPackage === 'wifi-qcom') {
-            validationErrors.push(
-              'No provisioning rules found. wifi-qcom CAPsMAN does not support provisioning rules - ' +
-              'this device type requires a different CAPsMAN configuration approach'
-            );
-          } else {
-            validationErrors.push('No provisioning rules found - CAPs will not receive configuration');
-          }
+          validationErrors.push('No provisioning rules found - CAPs will not receive configuration');
         } else {
           console.log('✓ Provisioning rules configured');
         }
-      }
-    } catch (e) {
-      if (e.message.includes('bad command name')) {
-        validationErrors.push(
-          `CAPsMAN provisioning command not available (${wifiPackage}). ` +
-          'This device may require a different CAPsMAN configuration approach'
-        );
-      } else if (!e.message.includes('no such item')) {
-        validationErrors.push(`Could not verify provisioning rules: ${e.message}`);
-      }
-    }
-
-    // Check master configurations exist (for wifiwave2)
-    try {
-      const configOutput = await mt.exec(`${capsmanPath}/configuration print`);
-
-      // MikroTik outputs errors to stdout, so check for error patterns in output
-      if (configOutput.includes('bad command name')) {
-        if (wifiPackage === 'wifi-qcom') {
-          // wifi-qcom doesn't have this command - already flagged above
-          console.log(`⚠️  Configuration command not available (${wifiPackage})`);
-        } else {
-          validationErrors.push('CAPsMAN configuration command not available');
+      } catch (e) {
+        if (!e.message.includes('no such item')) {
+          validationErrors.push(`Could not verify provisioning rules: ${e.message}`);
         }
-      } else {
+      }
+
+      // Check master configurations exist
+      try {
+        const configOutput = await mt.exec(`${capsmanPath}/configuration print`);
         const hasConfigurations = configOutput.split('\n')
           .filter(line => line.trim() && !line.includes('Flags:') && !line.includes('Columns:') && !line.includes('#')).length > 0;
 
         if (!hasConfigurations) {
-          if (wifiPackage === 'wifi-qcom') {
-            // wifi-qcom doesn't use configuration objects, this is expected to fail
-            console.log('⚠️  wifi-qcom: No configuration objects (expected - uses different model)');
-          } else {
-            validationErrors.push('No master configurations found - SSIDs not configured');
-          }
+          validationErrors.push('No master configurations found - SSIDs not configured');
         } else {
           console.log('✓ Master configurations created');
         }
+      } catch (e) {
+        if (!e.message.includes('no such item')) {
+          validationErrors.push(`Could not verify master configurations: ${e.message}`);
+        }
       }
-    } catch (e) {
-      if (e.message.includes('bad command name')) {
-        // wifi-qcom doesn't have this command - already flagged above
-        console.log(`⚠️  Configuration command not available (${wifiPackage})`);
-      } else if (!e.message.includes('no such item')) {
-        validationErrors.push(`Could not verify master configurations: ${e.message}`);
-      }
+    } else {
+      // wifi-qcom: No provisioning/configuration objects - CAP interfaces configured in Phase 2.5
+      console.log('✓ wifi-qcom mode: CAP interfaces will be configured after CAPs connect');
+      console.log('  (Run apply-multiple-devices.js for automatic Phase 2.5 configuration)');
     }
 
     // Report validation results
@@ -2593,6 +2801,7 @@ module.exports = {
   configureMikroTik,
   configureController,
   configureCap,
+  configureCapInterfacesOnController,
   backupMikroTikConfig,
   MikroTikSSH
 };
