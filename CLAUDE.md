@@ -70,6 +70,30 @@ const BAND_TO_INTERFACE = {
 };
 ```
 
+**CAPsMAN Architecture (Added v4.0.0)**
+- CAPsMAN provides centralized WiFi management with coordinated 802.11r/k/v roaming
+- Three device roles: `standalone` (default), `controller`, `cap`
+- Controller device runs CAPsMAN service and manages CAP devices
+- Controller also acts as an AP (hybrid mode) - no separate controller hardware needed
+- CAPs receive WiFi configuration from controller, apply local channel overrides
+- Works over L3 (routed networks) - CAPs don't need to be on same VLAN as controller
+- DTLS encryption secures CAP-to-controller management traffic
+- Firewall: allow UDP 5246-5247 from CAP VLANs to controller
+- Certificate authentication available for enhanced security
+
+**CAPsMAN vs Standalone Roaming**
+- Standalone with 802.11r: Client-dependent roaming, no AP coordination
+- CAPsMAN with 802.11r/k/v: Coordinated roaming with shared PMK keys and client steering
+- 802.11k (neighbor reports): APs tell clients about nearby APs
+- 802.11v (BSS transition): APs can proactively steer weak-signal clients
+- For full roaming benefits, use CAPsMAN mode
+
+**CAPsMAN Deployment Order**
+- Controller MUST be configured before CAPs
+- `apply-multiple-devices.js` auto-detects CAPsMAN and deploys controller first
+- 5-second wait after controller for CAPsMAN service to initialize
+- CAPs then connect and receive configuration
+
 ### MikroTik RouterOS v7 WiFi Quirks
 
 **Inline Configuration (not separate objects)**

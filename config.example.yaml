@@ -1,9 +1,21 @@
 # MikroTik Network Configuration Example
+#
+# This file supports three modes:
+#   - standalone (default): Independent WiFi AP
+#   - controller: CAPsMAN controller managing CAP devices
+#   - cap: Controlled Access Point receiving config from controller
+#
+# For multi-device CAPsMAN deployments, see multiple-devices.example.yaml
 
 device:
   host: 192.168.88.1
   username: admin
   password: admin
+
+# Role determines device mode (default: standalone)
+# role: standalone  # Independent WiFi AP (default)
+# role: controller  # CAPsMAN controller
+# role: cap         # Controlled Access Point
 
 # Management interfaces
 # Typically ether1 is used as trunk port (untagged management + tagged VLANs)
@@ -40,6 +52,12 @@ wifi:
 #
 # Fast Roaming (802.11r/k/v) - configured per-SSID:
 #   fastTransition: true   - 802.11r Fast BSS Transition (reduces handoff time)
+#   rrm: true              - 802.11k Radio Resource Management (neighbor reports)
+#   wnm: true              - 802.11v Wireless Network Management (client steering)
+#   transitionThreshold: -80  - Signal threshold (dBm) for 802.11v steering
+#
+# Note: 802.11k/v require CAPsMAN mode (role: controller) for full coordination.
+# In standalone mode, only 802.11r provides roaming benefit.
 #
 # Recommendation:
 #   - Enable for mobile devices (laptops, phones) that move between APs
@@ -54,7 +72,10 @@ ssids:
       - 2.4GHz
       - 5GHz
     roaming:
-      fastTransition: true  # 802.11r enabled - seamless handoff between APs
+      fastTransition: true  # 802.11r - fast BSS transition
+      rrm: true             # 802.11k - neighbor reports (CAPsMAN only)
+      wnm: true             # 802.11v - client steering (CAPsMAN only)
+      transitionThreshold: -80  # Signal threshold for 802.11v steering
 
   # 5GHz only network with roaming (high-performance devices)
   - ssid: MyNetwork-5G
@@ -86,3 +107,30 @@ ssids:
 
 # Supported bands: 2.4GHz, 5GHz
 # Supported VLANs: Any VLAN ID (100, 200, etc.)
+
+# ============================================================================
+# CAPsMAN Controller Configuration (role: controller)
+# ============================================================================
+# Uncomment and configure for CAPsMAN controller mode:
+#
+# capsman:
+#   certificate: auto              # Auto-generate certificate (recommended)
+#   requirePeerCertificate: false  # Require CAPs to have certificates
+#
+# The controller creates "master configurations" from SSIDs above and
+# provisions CAPs that connect to it.
+
+# ============================================================================
+# CAP (Controlled Access Point) Configuration (role: cap)
+# ============================================================================
+# Uncomment and configure for CAP mode:
+#
+# cap:
+#   controllerAddresses:           # Controller IP(s) - required for L3/cross-VLAN
+#     - 10.212.254.1
+#   certificate: request           # Request certificate from controller
+#   lockToController: true         # Only connect to specified controller
+#
+# CAP devices receive WiFi configuration from the controller.
+# Local wifi settings (channel, txPower) override controller defaults.
+# SSIDs are NOT needed in CAP config - they come from the controller.

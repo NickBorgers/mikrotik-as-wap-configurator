@@ -1,5 +1,60 @@
 # Changelog
 
+## [4.0.0] - 2026-01-16 - CAPsMAN Support with 802.11r/k/v Roaming
+
+### Added - CAPsMAN Centralized WiFi Management
+- **Three device roles**: `standalone` (default), `controller`, `cap`
+- **Controller mode**: Runs CAPsMAN service, manages CAP devices, also acts as AP
+- **CAP mode**: Receives WiFi configuration from controller, applies local channel overrides
+- **Coordinated roaming**: 802.11r/k/v work properly with CAPsMAN coordination
+
+### Added - 802.11k/v Support (CAPsMAN)
+- **802.11k (RRM)**: Neighbor reports - APs tell clients about nearby APs
+- **802.11v (WNM)**: BSS Transition Management - APs steer weak-signal clients
+- **Per-SSID config**: `roaming: { rrm: true, wnm: true, transitionThreshold: -80 }`
+- Note: 802.11k/v only effective in CAPsMAN mode, not standalone
+
+### Added - Cross-VLAN/L3 Support
+- **No shared broadcast domain needed** - CAPsMAN works over L3 routing
+- **DTLS encryption** - CAP-to-controller management traffic encrypted
+- **Certificate authentication** - Optional mutual certificate auth for security
+- **Firewall**: Allow UDP 5246-5247 from CAP management VLANs to controller
+
+### Added - Controller-First Deployment
+- `apply-multiple-devices.js` auto-detects CAPsMAN mode
+- Controller configured first, then 5-second wait for service initialization
+- CAPs configured after controller is ready
+- Deployment summary shows device roles
+
+### New YAML Schema
+```yaml
+# Controller example
+role: controller
+capsman:
+  certificate: auto
+  requirePeerCertificate: false
+ssids:
+  - ssid: MyNetwork
+    roaming:
+      fastTransition: true  # 802.11r
+      rrm: true             # 802.11k
+      wnm: true             # 802.11v
+
+# CAP example
+role: cap
+cap:
+  controllerAddresses:
+    - 10.212.254.1
+  certificate: request
+  lockToController: true
+wifi:
+  2.4GHz: { channel: 6 }   # Local override
+```
+
+### Backward Compatibility
+- `role` defaults to `standalone` - existing configs work unchanged
+- Migration is opt-in by adding `role` field
+
 ## [3.0.0] - 2026-01-15 - Per-SSID 802.11r Configuration
 
 ### Breaking Change
