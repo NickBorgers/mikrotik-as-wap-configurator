@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const yaml = require('js-yaml');
-const { configureMikroTik } = require('./mikrotik-no-vlan-filtering.js');
+const { configureMikroTik, configureCapInterfacesOnController } = require('./mikrotik-no-vlan-filtering.js');
 
 function loadConfig(configFile) {
   try {
@@ -315,6 +315,21 @@ async function main() {
             await new Promise(resolve => setTimeout(resolve, staggerDelay * 1000));
           }
         }
+      }
+
+      // Phase 2.5: Configure CAP interfaces on controller (wifi-qcom only)
+      // For wifi-qcom CAPsMAN, CAP interfaces must be configured directly after CAPs connect
+      // This function detects the WiFi package and skips if wifiwave2 (uses provisioning rules)
+      console.log('\n=== Phase 2.5: Configuring CAP Interfaces on Controller ===\n');
+      console.log('⏳ Waiting 3s for CAP interfaces to appear...');
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+      try {
+        await configureCapInterfacesOnController(controllerConfig);
+        console.log('✓ CAP interface configuration complete');
+      } catch (error) {
+        console.error(`⚠️  CAP interface configuration warning: ${error.message}`);
+        console.error('    CAP interfaces may need manual configuration.');
       }
     }
 

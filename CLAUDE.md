@@ -122,6 +122,27 @@ const BAND_TO_INTERFACE = {
 - CAPs use `capsman-vlan` as discovery interface when configured
 - Rollback: `/interface vlan remove [find name=capsman-vlan]`
 
+**wifi-qcom CAPsMAN (Added v4.3.0)**
+- wifi-qcom doesn't support `/interface/wifi/capsman/configuration` or `/provisioning` commands
+- These commands fail with "bad command name" on wifi-qcom devices
+- Solution: Configure CAP-operated interfaces directly on the controller after CAPs connect
+- CAP interfaces appear on controller with naming pattern: `<cap-identity>-2g`, `<cap-identity>-5g`
+- Deployment phases for wifi-qcom:
+  1. Phase 1: Enable CAPsMAN service on controller (no configuration objects)
+  2. Phase 2: CAPs connect to controller, creating CAP interfaces
+  3. Phase 2.5: Configure each CAP interface directly with SSID/security/datapath
+- wifiwave2 devices continue using provisioning rules (Phase 2.5 auto-skips)
+- Detection: `detectWifiPackage()` returns `wifi-qcom` or `wifiwave2`
+- Example CAP interface configuration:
+  ```
+  /interface/wifi set shed-wap-2g \
+      configuration.ssid="MySSID" \
+      security.authentication-types=wpa2-psk \
+      security.passphrase="password" \
+      datapath.bridge=bridge datapath.vlan-id=100 \
+      disabled=no
+  ```
+
 ### MikroTik RouterOS v7 WiFi Quirks
 
 **Inline Configuration (not separate objects)**
@@ -166,6 +187,32 @@ const BAND_TO_INTERFACE = {
 - Check that SSID is in config.yaml
 - Verify correct band specified
 - Run `./apply-config.js config.yaml` to reapply
+
+## SSH Access to Devices
+
+**DO NOT use the `ssh` command directly** - it will fail with password authentication.
+
+**Use the MikroTikSSH class from the script:**
+```javascript
+node -e "
+const {MikroTikSSH} = require('./mikrotik-no-vlan-filtering.js');
+async function run() {
+  const mt = new MikroTikSSH('managed-wap-south.nickborgers.net', 'admin', 'admin');
+  await mt.connect();
+  const result = await mt.exec('/interface/wifi/registration-table print');
+  console.log(result);
+  await mt.close();
+}
+run().catch(e => console.error(e.message));
+"
+```
+
+**Common commands to run:**
+- `/interface/wifi print` - List WiFi interfaces
+- `/interface/wifi/registration-table print` - Show connected clients
+- `/interface/wifi/capsman print` - CAPsMAN status
+- `/interface/wifi/capsman/remote-cap print` - Connected CAPs
+- `/system/resource print` - System info
 
 ## Testing
 

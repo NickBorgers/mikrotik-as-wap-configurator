@@ -1,5 +1,36 @@
 # Changelog
 
+## [4.3.0] - 2026-01-16 - wifi-qcom CAPsMAN Support
+
+### Added - wifi-qcom CAPsMAN Direct Interface Configuration
+- **wifi-qcom CAPsMAN support** - Fixed CAPsMAN configuration for wifi-qcom devices
+- **Problem**: wifi-qcom doesn't support `/interface/wifi/capsman/configuration` or `/provisioning` commands
+- **Solution**: Configure CAP-operated interfaces directly on the controller after CAPs connect
+- **New Phase 2.5** - Multi-device deployment now includes automatic CAP interface configuration
+
+### New Functions
+- `discoverCapInterfaces()` - Discover CAP-operated interfaces on controller by naming pattern
+- `configureCapInterfacesOnController()` - Configure CAP interfaces with SSID/security/datapath
+- `configureWifiInterface()` - Reusable helper for inline WiFi interface configuration
+
+### How It Works
+1. **Phase 1**: Controller enables CAPsMAN service (no configuration/provisioning objects for wifi-qcom)
+2. **Phase 2**: CAPs connect to controller, creating CAP interfaces (e.g., `shed-wap-2g`, `indoor-wap-5g`)
+3. **Phase 2.5** (NEW): Controller configures each CAP interface directly:
+   ```
+   /interface/wifi set shed-wap-2g \
+       configuration.ssid="MySSID" \
+       security.authentication-types=wpa2-psk \
+       security.passphrase="..." \
+       datapath.bridge=bridge datapath.vlan-id=100 \
+       disabled=no
+   ```
+
+### Backward Compatibility
+- **wifiwave2 devices**: Continue using existing configuration/provisioning approach
+- Phase 2.5 automatically detects wifiwave2 and skips (not needed)
+- No changes to YAML schema required
+
 ## [4.2.0] - 2026-01-16 - Code Simplification & Refactoring
 
 ### Changed - Major Code Refactoring
