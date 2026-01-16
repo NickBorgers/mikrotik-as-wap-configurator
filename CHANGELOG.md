@@ -1,6 +1,30 @@
 # Changelog
 
-## [4.1.0] - 2026-01-16 - Dedicated CAPsMAN VLAN
+## [4.1.0] - 2026-01-16 - Dedicated CAPsMAN VLAN & Docker Multi-Device Support
+
+### Added - Docker Multi-Device Support
+- **`apply-multiple` command** - Apply configurations to multiple devices from Docker
+- **`example-multiple` command** - Output example `multiple-devices.yaml` configuration
+- **Full flag support** - Pass `--parallel`, `--delay <secs>`, `--no-delay` to control deployment
+- Multi-device configuration is now a first-class Docker feature
+
+### Docker Usage
+```bash
+# Get example multi-device configuration
+docker run ghcr.io/nickborgers/mikrotik-as-wap-configurator example-multiple > multiple-devices.yaml
+
+# Apply to multiple devices (sequential with 5s delay)
+docker run -v $(pwd)/multiple-devices.yaml:/config/multiple-devices.yaml \
+  ghcr.io/nickborgers/mikrotik-as-wap-configurator apply-multiple
+
+# Apply in parallel (faster, but network-wide outage)
+docker run -v $(pwd)/multiple-devices.yaml:/config/multiple-devices.yaml \
+  ghcr.io/nickborgers/mikrotik-as-wap-configurator apply-multiple --parallel
+
+# Custom delay between devices
+docker run -v $(pwd)/multiple-devices.yaml:/config/multiple-devices.yaml \
+  ghcr.io/nickborgers/mikrotik-as-wap-configurator apply-multiple --delay 10
+```
 
 ### Added - CAPsMAN VLAN for L2 Connectivity
 - **Dedicated CAPsMAN VLAN** - Solves wifi-qcom L3 connectivity issues
