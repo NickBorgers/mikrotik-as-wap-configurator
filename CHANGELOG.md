@@ -1,5 +1,35 @@
 # Changelog
 
+## [4.2.0] - 2026-01-16 - Code Simplification & Refactoring
+
+### Changed - Major Code Refactoring
+- **Extracted shared helper functions** - Reduced code duplication across `configureMikroTik()`, `configureController()`, and `configureCap()`
+- **New reusable helpers** - Added 10 shared helper functions for common operations:
+  - `execIdempotent()` - Execute commands with graceful "already exists" handling
+  - `execWithWarning()` - Execute commands with warning-level error handling
+  - `setDeviceIdentity()` - Set device identity from FQDN hostname
+  - `detectWifiPackage()` - Detect WiFiWave2 vs wifi-qcom package
+  - `ensureBridgeInfrastructure()` - Create bridge and disable VLAN filtering
+  - `configureManagementInterfaces()` - Configure bridge ports and LACP bonds
+  - `configureDisabledInterfaces()` - Disable unused Ethernet interfaces
+  - `enableDhcpClient()` - Enable DHCP client on bridge
+  - `configureSyslog()` - Configure remote syslog
+  - `detectRadioLayout()` - Detect WiFi radio layout (standard vs swapped)
+  - `applyBandSettings()` - Apply channel/power/country settings per band
+
+### Technical Details
+- Reduced `configureController()` from 314 to ~180 lines
+- Reduced `configureCap()` from 296 to ~130 lines
+- Reduced total file size from 2534 to 2447 lines (~87 lines / 3.4%)
+- Eliminated ~150 lines of duplicated try-catch error handling
+- Eliminated ~100 lines of duplicated setup code across 3 functions
+- All helper functions include JSDoc documentation
+
+### Backward Compatibility
+- No changes to YAML schema or API
+- All existing configurations work unchanged
+- No changes to CLI tools or Docker commands
+
 ## [4.1.1] - 2026-01-16 - LACP Bond Support for CAPsMAN
 
 ### Fixed - LACP Bond Configuration in CAPsMAN Mode

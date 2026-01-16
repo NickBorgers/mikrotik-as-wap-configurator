@@ -168,6 +168,326 @@ function getCapPath(wifiPackage) {
   return wifiPackage === 'wifiwave2' ? '/interface/wifiwave2/cap' : '/interface/wifi/cap';
 }
 
+// ============================================================================
+// SHARED SETUP HELPERS - Extracted from configureController/configureCap/configureMikroTik
+// ============================================================================
+
+/**
+ * Execute a command idempotently - handles "already exists" errors gracefully
+ * @param {MikroTikSSH} mt - Connected SSH session
+ * @param {string} command - Command to execute
+ * @param {string} successMsg - Message to show on success
+ * @param {string[]} alreadyDonePatterns - Patterns indicating operation already complete
+ * @returns {boolean} - True if successful or already done
+ */
+async function execIdempotent(mt, command, successMsg, alreadyDonePatterns = ['already have', 'exists']) {
+  try {
+    await mt.exec(command);
+    console.log(`✓ ${successMsg}`);
+    return true;
+  } catch (e) {
+    if (alreadyDonePatterns.some(p => e.message.includes(p))) {
+      console.log(`✓ ${successMsg} (already done)`);
+      return true;
+    }
+    throw e;
+  }
+}
+
+/**
+ * Execute a command, logging warning on failure instead of throwing
+ * @param {MikroTikSSH} mt - Connected SSH session
+ * @param {string} command - Command to execute
+ * @param {string} successMsg - Message to show on success
+ * @param {string} warningPrefix - Prefix for warning message on failure
+ */
+async function execWithWarning(mt, command, successMsg, warningPrefix) {
+  try {
+    await mt.exec(command);
+    console.log(`✓ ${successMsg}`);
+  } catch (e) {
+    console.log(`⚠️  ${warningPrefix}: ${e.message}`);
+  }
+}
+
+/**
+ * Set device identity based on hostname from FQDN
+ * @param {MikroTikSSH} mt - Connected SSH session
+ * @param {Object} config - Configuration with host and optional identity
+ * @returns {string|null} - The identity that was set, or null
+ */
+async function setDeviceIdentity(mt, config) {
+  console.log('=== Setting Device Identity ===');
+
+  let deviceIdentity = config.identity;
+
+  if (!deviceIdentity && config.host) {
+    if (config.host.includes('.') && !config.host.match(/^\d+\.\d+\.\d+\.\d+$/)) {
+      deviceIdentity = config.host.split('.')[0];
+      console.log(`✓ Extracted hostname from FQDN: ${deviceIdentity}`);
+    } else if (!config.host.match(/^\d+\.\d+\.\d+\.\d+$/)) {
+      deviceIdentity = config.host;
+      console.log(`✓ Using host as identity: ${deviceIdentity}`);
+    }
+  }
+
+  if (deviceIdentity) {
+    try {
+      await mt.exec(`/system identity set name="${deviceIdentity}"`);
+      console.log(`✓ Device identity set to: ${deviceIdentity}`);
+    } catch (e) {
+      console.log(`⚠️  Could not set device identity: ${e.message}`);
+    }
+  } else {
+    console.log('⚠️  No hostname found to set as identity (using IP address for connection)');
+  }
+
+  return deviceIdentity;
+}
+
+/**
+ * Detect WiFi package type (wifiwave2 or wifi-qcom)
+ * @param {MikroTikSSH} mt - Connected SSH session
+ * @returns {string|null} - 'wifiwave2', 'wifi-qcom', or null if not found
+ */
+async function detectWifiPackage(mt) {
+  console.log('\n=== Detecting WiFi Package ===');
+
+  const packages = await mt.exec('/system package print terse where name~"wifi"');
+
+  if (packages.includes('wifiwave2')) {
+    console.log('✓ Using WiFiWave2 package');
+    return 'wifiwave2';
+  } else if (packages.includes('wifi-qcom') || packages.includes('wifi ')) {
+    console.log('✓ Using WiFi-QCOM package');
+    return 'wifi-qcom';
+  }
+
+  console.log('✗ No supported WiFi package found');
+  return null;
+}
+
+/**
+ * Ensure bridge exists and disable VLAN filtering
+ * @param {MikroTikSSH} mt - Connected SSH session
+ */
+async function ensureBridgeInfrastructure(mt) {
+  console.log('\n=== Ensuring Basic Infrastructure ===');
+
+  // Check if bridge exists, create if not
+  try {
+    const bridges = await mt.exec('/interface bridge print terse where name=bridge');
+    if (!bridges || !bridges.trim()) {
+      await mt.exec('/interface bridge add name=bridge');
+      console.log('✓ Created bridge');
+    } else {
+      console.log('✓ Bridge already exists');
+    }
+  } catch (e) {
+    try {
+      await mt.exec('/interface bridge add name=bridge');
+      console.log('✓ Created bridge');
+    } catch (addErr) {
+      if (addErr.message.includes('already')) {
+        console.log('✓ Bridge already exists');
+      } else {
+        console.log('⚠️  Could not verify/create bridge: ' + addErr.message);
+      }
+    }
+  }
+
+  // Disable VLAN filtering for safety
+  try {
+    await mt.exec('/interface bridge set bridge vlan-filtering=no');
+    console.log('✓ VLAN filtering disabled (safe for management)');
+  } catch (e) {
+    console.log(`⚠️  Could not disable VLAN filtering: ${e.message}`);
+  }
+}
+
+/**
+ * Configure management interfaces (simple interfaces or LACP bonds)
+ * @param {MikroTikSSH} mt - Connected SSH session
+ * @param {Object} config - Configuration with managementInterfaces array
+ */
+async function configureManagementInterfaces(mt, config) {
+  console.log('\n=== Configuring Management Interfaces ===');
+
+  const mgmtInterfaces = config.managementInterfaces || ['ether1'];
+
+  for (const iface of mgmtInterfaces) {
+    if (typeof iface === 'string') {
+      try {
+        await execIdempotent(
+          mt,
+          `/interface bridge port add bridge=bridge interface=${iface}`,
+          `Added ${iface} to bridge`,
+          ['already have interface']
+        );
+      } catch (e) {
+        console.log(`⚠️  Could not add ${iface}: ${e.message}`);
+      }
+    } else if (iface.bond && Array.isArray(iface.bond)) {
+      await configureLacpBond(mt, iface.bond);
+    }
+  }
+}
+
+/**
+ * Disable specified interfaces
+ * @param {MikroTikSSH} mt - Connected SSH session
+ * @param {Object} config - Configuration with disabledInterfaces array
+ */
+async function configureDisabledInterfaces(mt, config) {
+  const disabledInterfaces = config.disabledInterfaces || [];
+
+  for (const iface of disabledInterfaces) {
+    await execWithWarning(
+      mt,
+      `/interface ethernet set [find default-name=${iface}] disabled=yes`,
+      `Disabled ${iface}`,
+      `Could not disable ${iface}`
+    );
+  }
+}
+
+/**
+ * Enable DHCP client on bridge
+ * @param {MikroTikSSH} mt - Connected SSH session
+ */
+async function enableDhcpClient(mt) {
+  console.log('\n=== Establishing Management via DHCP ===');
+
+  try {
+    await execIdempotent(
+      mt,
+      '/ip dhcp-client add interface=bridge disabled=no',
+      'Added DHCP client on bridge',
+      ['already have']
+    );
+  } catch (e) {
+    console.log(`⚠️  DHCP client: ${e.message}`);
+  }
+}
+
+/**
+ * Configure remote syslog
+ * @param {MikroTikSSH} mt - Connected SSH session
+ * @param {Object} config - Configuration with syslog settings
+ * @param {string} [deviceIdentity] - Device identity to use as syslog prefix
+ */
+async function configureSyslog(mt, config, deviceIdentity) {
+  if (!config.syslog || !config.syslog.server) {
+    return;
+  }
+
+  console.log('\n=== Configuring Remote Syslog ===');
+
+  const syslogServer = config.syslog.server;
+  const syslogPort = config.syslog.port || 514;
+  const syslogTopics = config.syslog.topics || ['wireless'];
+  const syslogActionName = 'remotesyslog';
+
+  // Remove existing syslog configuration (idempotency)
+  try {
+    await mt.exec(`/system logging action remove [find name="${syslogActionName}"]`);
+  } catch (e) { /* ignore */ }
+
+  try {
+    await mt.exec(`/system logging remove [find action="${syslogActionName}"]`);
+  } catch (e) { /* ignore */ }
+
+  try {
+    // Build the logging action command with optional prefix for device identification
+    let actionCmd = `/system logging action add name="${syslogActionName}" target=remote ` +
+      `remote=${syslogServer} remote-port=${syslogPort}`;
+
+    // Add prefix with device identity so logs can be attributed to specific WAPs
+    // This is critical for CAPsMAN deployments where all logs come from controller IP
+    if (deviceIdentity) {
+      actionCmd += ` prefix="${deviceIdentity}"`;
+    }
+
+    await mt.exec(actionCmd);
+
+    for (const topic of syslogTopics) {
+      await mt.exec(`/system logging add topics=${topic} action="${syslogActionName}"`);
+    }
+
+    console.log(`✓ Syslog configured: ${syslogServer}:${syslogPort}`);
+    if (deviceIdentity) {
+      console.log(`  Prefix: ${deviceIdentity}`);
+    }
+    console.log(`  Topics: ${syslogTopics.join(', ')}`);
+  } catch (e) {
+    console.log(`⚠️  Syslog config: ${e.message}`);
+  }
+}
+
+/**
+ * Detect board type and return correct interface mapping for WiFi radios
+ * Some MikroTik devices have swapped radio layouts
+ * @param {MikroTikSSH} mt - Connected SSH session
+ * @returns {Object} - { interface24: string, interface5: string }
+ */
+async function detectRadioLayout(mt) {
+  let interface24 = 'wifi1';
+  let interface5 = 'wifi2';
+
+  try {
+    const resource = await mt.exec('/system resource print');
+    const boardMatch = resource.match(/board-name:\s*([^\n]+)/);
+    const boardName = boardMatch ? boardMatch[1].trim().toLowerCase() : '';
+    const swappedRadioDevices = ['cap ax', 'cap ac'];
+
+    if (swappedRadioDevices.some(d => boardName.includes(d))) {
+      interface24 = 'wifi2';
+      interface5 = 'wifi1';
+      console.log(`ℹ️  ${boardMatch[1].trim()}: Swapped radio layout`);
+    }
+  } catch (e) {
+    console.log('⚠️  Could not detect board, assuming standard layout');
+  }
+
+  return { interface24, interface5 };
+}
+
+/**
+ * Apply WiFi channel settings for a specific band
+ * @param {MikroTikSSH} mt - Connected SSH session
+ * @param {string} band - '2.4GHz' or '5GHz'
+ * @param {string} interfaceName - WiFi interface name
+ * @param {Object} bandConfig - Band configuration (channel, txPower, width, country)
+ * @param {string} wifiPath - WiFi command path
+ */
+async function applyBandSettings(mt, band, interfaceName, bandConfig, wifiPath) {
+  if (!bandConfig) return;
+
+  const commands = [];
+  const channelFreqMap = band === '2.4GHz' ? CHANNEL_FREQ_24GHZ : CHANNEL_FREQ_5GHZ;
+
+  if (bandConfig.channel) {
+    const freq = channelFreqMap[bandConfig.channel];
+    if (freq) commands.push(`channel.frequency=${freq}`);
+  }
+  if (bandConfig.txPower) commands.push(`channel.tx-power=${bandConfig.txPower}`);
+  if (bandConfig.width) commands.push(`channel.width=${bandConfig.width}`);
+  if (bandConfig.country) commands.push(`channel.country="${bandConfig.country}"`);
+
+  if (commands.length > 0) {
+    try {
+      await mt.exec(`${wifiPath} set ${interfaceName} ${commands.join(' ')}`);
+      console.log(`✓ Applied ${band} settings: ${commands.join(', ')}`);
+    } catch (e) {
+      console.log(`⚠️  ${band} settings: ${e.message}`);
+    }
+  }
+}
+
+// ============================================================================
+// END SHARED SETUP HELPERS
+// ============================================================================
+
 /**
  * Configure LACP bond with deterministic MAC address for DHCP static leases
  * Uses forced-mac-address from primary interface to ensure consistent MAC
@@ -384,35 +704,11 @@ async function configureController(config = {}) {
     }
 
     // Step 0: Set device identity
-    console.log('=== Step 0: Setting Device Identity ===');
-    let deviceIdentity = config.identity;
-    if (!deviceIdentity && config.host) {
-      if (config.host.includes('.') && !config.host.match(/^\d+\.\d+\.\d+\.\d+$/)) {
-        deviceIdentity = config.host.split('.')[0];
-        console.log(`✓ Extracted hostname from FQDN: ${deviceIdentity}`);
-      }
-    }
-    if (deviceIdentity) {
-      try {
-        await mt.exec(`/system identity set name="${deviceIdentity}"`);
-        console.log(`✓ Device identity set to: ${deviceIdentity}`);
-      } catch (e) {
-        console.log(`⚠️  Could not set device identity: ${e.message}`);
-      }
-    }
+    const deviceIdentity = await setDeviceIdentity(mt, config);
 
     // Step 1: Detect WiFi package
-    console.log('\n=== Step 1: Detecting WiFi Package ===');
-    let wifiPackage = 'unknown';
-    const packages = await mt.exec('/system package print terse where name~"wifi"');
-    if (packages.includes('wifiwave2')) {
-      wifiPackage = 'wifiwave2';
-      console.log('✓ Using WiFiWave2 package');
-    } else if (packages.includes('wifi-qcom') || packages.includes('wifi ')) {
-      wifiPackage = 'wifi-qcom';
-      console.log('✓ Using WiFi-QCOM package');
-    } else {
-      console.log('✗ No supported WiFi package found');
+    const wifiPackage = await detectWifiPackage(mt);
+    if (!wifiPackage) {
       await mt.close();
       return false;
     }
@@ -420,78 +716,22 @@ async function configureController(config = {}) {
     const capsmanPath = getCapsmanPath(wifiPackage);
     const wifiPath = getWifiPath(wifiPackage);
 
-    // Step 2: Ensure Bridge Exists
-    console.log('\n=== Step 2: Ensuring Basic Infrastructure ===');
-    try {
-      const bridges = await mt.exec('/interface bridge print terse where name=bridge');
-      if (!bridges || !bridges.trim()) {
-        await mt.exec('/interface bridge add name=bridge');
-        console.log('✓ Created bridge');
-      } else {
-        console.log('✓ Bridge already exists');
-      }
-    } catch (e) {
-      console.log(`⚠️  Bridge check: ${e.message}`);
-    }
-
-    // Disable VLAN filtering for safety
-    try {
-      await mt.exec('/interface bridge set bridge vlan-filtering=no');
-      console.log('✓ VLAN filtering disabled (safe for management)');
-    } catch (e) {
-      console.log(`⚠️  Could not disable VLAN filtering: ${e.message}`);
-    }
+    // Step 2: Ensure bridge and disable VLAN filtering
+    await ensureBridgeInfrastructure(mt);
 
     // Step 3: Configure management interfaces
-    console.log('\n=== Step 3: Configuring Management Interfaces ===');
-    const mgmtInterfaces = config.managementInterfaces || ['ether1'];
-    for (const iface of mgmtInterfaces) {
-      if (typeof iface === 'string') {
-        try {
-          await mt.exec(`/interface bridge port add bridge=bridge interface=${iface}`);
-          console.log(`✓ Added ${iface} to bridge`);
-        } catch (e) {
-          if (e.message.includes('already have interface')) {
-            console.log(`✓ ${iface} already in bridge`);
-          } else {
-            console.log(`⚠️  Could not add ${iface}: ${e.message}`);
-          }
-        }
-      } else if (iface.bond && Array.isArray(iface.bond)) {
-        // LACP bond configuration with deterministic MAC address
-        await configureLacpBond(mt, iface.bond);
-      }
-    }
-
-    // Disable unused interfaces
-    const disabledInterfaces = config.disabledInterfaces || [];
-    for (const iface of disabledInterfaces) {
-      try {
-        await mt.exec(`/interface ethernet set [find default-name=${iface}] disabled=yes`);
-        console.log(`✓ Disabled ${iface}`);
-      } catch (e) {
-        console.log(`⚠️  Could not disable ${iface}: ${e.message}`);
-      }
-    }
+    await configureManagementInterfaces(mt, config);
+    await configureDisabledInterfaces(mt, config);
 
     // Step 4: Enable DHCP client
-    console.log('\n=== Step 4: Establishing Management via DHCP ===');
-    try {
-      await mt.exec('/ip dhcp-client add interface=bridge disabled=no');
-      console.log('✓ Added DHCP client on bridge');
-    } catch (e) {
-      if (e.message.includes('already have')) {
-        console.log('✓ DHCP client already exists');
-      }
-    }
+    await enableDhcpClient(mt);
 
     // Step 4.5: Configure CAPsMAN VLAN (if specified)
     await configureCapsmanVlan(mt, config);
 
     // Step 5: Clean up old CAPsMAN configurations
-    console.log('\n=== Step 5: Cleaning Up Old CAPsMAN Configurations ===');
+    console.log('\n=== Cleaning Up Old CAPsMAN Configurations ===');
     try {
-      // Remove existing provisioning rules
       await mt.exec(`${capsmanPath}/provisioning remove [find]`);
       console.log('✓ Removed old provisioning rules');
     } catch (e) {
@@ -501,7 +741,6 @@ async function configureController(config = {}) {
     }
 
     try {
-      // Remove existing master configurations
       await mt.exec(`${capsmanPath}/configuration remove [find]`);
       console.log('✓ Removed old master configurations');
     } catch (e) {
@@ -511,7 +750,7 @@ async function configureController(config = {}) {
     }
 
     // Step 6: Create master configurations for each SSID
-    console.log('\n=== Step 6: Creating Master Configurations ===');
+    console.log('\n=== Creating Master Configurations ===');
     const wifiConfig = config.wifi || {};
     const country = wifiConfig.country || 'United States';
 
@@ -525,58 +764,34 @@ async function configureController(config = {}) {
 
       console.log(`\nConfiguring SSID: ${ssid}`);
 
-      // Determine authentication types based on roaming config
       const useFT = roaming?.fastTransition === true;
       const useRRM = roaming?.rrm === true;
       const useWNM = roaming?.wnm === true;
       const transitionThreshold = roaming?.transitionThreshold || -80;
 
-      // Build authentication types string
-      let authTypes = 'wpa2-psk';
-      if (useFT) {
-        authTypes = 'wpa2-psk,ft-psk';
-      }
-
+      const authTypes = useFT ? 'wpa2-psk,ft-psk' : 'wpa2-psk';
       const escapedSsid = escapeMikroTik(ssid);
       const escapedPassphrase = escapeMikroTik(passphrase);
 
-      // Create configuration for each band
       for (const band of bands) {
         const bandSuffix = band === '2.4GHz' ? '2g' : '5g';
         const configName = `cfg-${ssid.replace(/[^a-zA-Z0-9]/g, '')}-${bandSuffix}`;
         const bandSpec = band === '2.4GHz' ? '2ghz-ax,2ghz-n' : '5ghz-ax,5ghz-n,5ghz-ac';
 
-        // Get band-specific settings
         const bandConfig = wifiConfig[band] || {};
         const channelCmd = bandConfig.channel ?
           `channel.frequency=${band === '2.4GHz' ? CHANNEL_FREQ_24GHZ[bandConfig.channel] : CHANNEL_FREQ_5GHZ[bandConfig.channel]}` : '';
         const txPowerCmd = bandConfig.txPower ? `channel.tx-power=${bandConfig.txPower}` : '';
         const widthCmd = bandConfig.width ? `channel.width=${bandConfig.width}` : '';
 
-        // Build configuration command
         let configCmd = `${capsmanPath}/configuration add ` +
-          `name="${configName}" ` +
-          `ssid="${escapedSsid}" ` +
-          `country="${country}" ` +
-          `security.authentication-types=${authTypes} ` +
-          `security.passphrase="${escapedPassphrase}" ` +
-          `datapath.bridge=bridge ` +
-          `datapath.vlan-id=${vlan}`;
+          `name="${configName}" ssid="${escapedSsid}" country="${country}" ` +
+          `security.authentication-types=${authTypes} security.passphrase="${escapedPassphrase}" ` +
+          `datapath.bridge=bridge datapath.vlan-id=${vlan}`;
 
-        // Add 802.11r settings
-        if (useFT) {
-          configCmd += ` security.ft=yes security.ft-over-ds=yes`;
-        }
-
-        // Add 802.11k/v settings
-        if (useRRM) {
-          configCmd += ` steering.rrm=yes`;
-        }
-        if (useWNM) {
-          configCmd += ` steering.wnm=yes steering.transition-threshold=${transitionThreshold}`;
-        }
-
-        // Add channel settings
+        if (useFT) configCmd += ` security.ft=yes security.ft-over-ds=yes`;
+        if (useRRM) configCmd += ` steering.rrm=yes`;
+        if (useWNM) configCmd += ` steering.wnm=yes steering.transition-threshold=${transitionThreshold}`;
         if (channelCmd) configCmd += ` ${channelCmd}`;
         if (txPowerCmd) configCmd += ` ${txPowerCmd}`;
         if (widthCmd) configCmd += ` ${widthCmd}`;
@@ -591,13 +806,10 @@ async function configureController(config = {}) {
           console.log(`  ✗ Failed to create config ${configName}: ${e.message}`);
         }
 
-        // Create provisioning rule for this band
         try {
           await mt.exec(
-            `${capsmanPath}/provisioning add ` +
-            `supported-bands=${bandSpec} ` +
-            `master-configuration="${configName}" ` +
-            `action=create-dynamic-enabled`
+            `${capsmanPath}/provisioning add supported-bands=${bandSpec} ` +
+            `master-configuration="${configName}" action=create-dynamic-enabled`
           );
           console.log(`  ✓ Created provisioning rule for ${bandSpec}`);
         } catch (e) {
@@ -607,7 +819,7 @@ async function configureController(config = {}) {
     }
 
     // Step 7: Enable CAPsMAN service
-    console.log('\n=== Step 7: Enabling CAPsMAN Service ===');
+    console.log('\n=== Enabling CAPsMAN Service ===');
     const certificate = capsmanConfig.certificate || 'auto';
     const requirePeerCert = capsmanConfig.requirePeerCertificate ? 'yes' : 'no';
 
@@ -622,9 +834,8 @@ async function configureController(config = {}) {
     }
 
     // Step 8: Configure local WiFi interfaces (controller also acts as AP)
-    console.log('\n=== Step 8: Configuring Local WiFi (Controller as AP) ===');
+    console.log('\n=== Configuring Local WiFi (Controller as AP) ===');
     try {
-      // Set local interfaces to use CAPsMAN configuration
       await mt.exec(`${wifiPath} set wifi1 configuration.manager=capsman-or-local`);
       await mt.exec(`${wifiPath} set wifi2 configuration.manager=capsman-or-local`);
       console.log('✓ Local WiFi interfaces set to CAPsMAN-managed');
@@ -632,34 +843,8 @@ async function configureController(config = {}) {
       console.log(`⚠️  Local WiFi config: ${e.message}`);
     }
 
-    // Step 9: Configure Syslog (if specified)
-    if (config.syslog && config.syslog.server) {
-      console.log('\n=== Step 9: Configuring Remote Syslog ===');
-      const syslogServer = config.syslog.server;
-      const syslogPort = config.syslog.port || 514;
-      const syslogTopics = config.syslog.topics || ['wireless'];
-
-      try {
-        await mt.exec(`/system logging action remove [find name="remotesyslog"]`);
-      } catch (e) { /* ignore */ }
-
-      try {
-        await mt.exec(`/system logging remove [find action="remotesyslog"]`);
-      } catch (e) { /* ignore */ }
-
-      try {
-        await mt.exec(
-          `/system logging action add name="remotesyslog" target=remote ` +
-          `remote=${syslogServer} remote-port=${syslogPort}`
-        );
-        for (const topic of syslogTopics) {
-          await mt.exec(`/system logging add topics=${topic} action="remotesyslog"`);
-        }
-        console.log(`✓ Syslog configured: ${syslogServer}:${syslogPort}`);
-      } catch (e) {
-        console.log(`⚠️  Syslog config: ${e.message}`);
-      }
-    }
+    // Step 9: Configure Syslog (with device identity prefix for log attribution)
+    await configureSyslog(mt, config, deviceIdentity);
 
     console.log('\n========================================');
     console.log('✓✓✓ CAPsMAN Controller Configuration Complete! ✓✓✓');
@@ -704,35 +889,11 @@ async function configureCap(config = {}) {
     }
 
     // Step 0: Set device identity
-    console.log('=== Step 0: Setting Device Identity ===');
-    let deviceIdentity = config.identity;
-    if (!deviceIdentity && config.host) {
-      if (config.host.includes('.') && !config.host.match(/^\d+\.\d+\.\d+\.\d+$/)) {
-        deviceIdentity = config.host.split('.')[0];
-        console.log(`✓ Extracted hostname from FQDN: ${deviceIdentity}`);
-      }
-    }
-    if (deviceIdentity) {
-      try {
-        await mt.exec(`/system identity set name="${deviceIdentity}"`);
-        console.log(`✓ Device identity set to: ${deviceIdentity}`);
-      } catch (e) {
-        console.log(`⚠️  Could not set device identity: ${e.message}`);
-      }
-    }
+    const deviceIdentity = await setDeviceIdentity(mt, config);
 
     // Step 1: Detect WiFi package
-    console.log('\n=== Step 1: Detecting WiFi Package ===');
-    let wifiPackage = 'unknown';
-    const packages = await mt.exec('/system package print terse where name~"wifi"');
-    if (packages.includes('wifiwave2')) {
-      wifiPackage = 'wifiwave2';
-      console.log('✓ Using WiFiWave2 package');
-    } else if (packages.includes('wifi-qcom') || packages.includes('wifi ')) {
-      wifiPackage = 'wifi-qcom';
-      console.log('✓ Using WiFi-QCOM package');
-    } else {
-      console.log('✗ No supported WiFi package found');
+    const wifiPackage = await detectWifiPackage(mt);
+    if (!wifiPackage) {
       await mt.close();
       return false;
     }
@@ -740,133 +901,28 @@ async function configureCap(config = {}) {
     const capPath = getCapPath(wifiPackage);
     const wifiPath = getWifiPath(wifiPackage);
 
-    // Step 2: Ensure Bridge Exists
-    console.log('\n=== Step 2: Ensuring Basic Infrastructure ===');
-    try {
-      const bridges = await mt.exec('/interface bridge print terse where name=bridge');
-      if (!bridges || !bridges.trim()) {
-        await mt.exec('/interface bridge add name=bridge');
-        console.log('✓ Created bridge');
-      } else {
-        console.log('✓ Bridge already exists');
-      }
-    } catch (e) {
-      console.log(`⚠️  Bridge check: ${e.message}`);
-    }
-
-    // Disable VLAN filtering for safety
-    try {
-      await mt.exec('/interface bridge set bridge vlan-filtering=no');
-      console.log('✓ VLAN filtering disabled (safe for management)');
-    } catch (e) {
-      console.log(`⚠️  Could not disable VLAN filtering: ${e.message}`);
-    }
+    // Step 2: Ensure bridge and disable VLAN filtering
+    await ensureBridgeInfrastructure(mt);
 
     // Step 3: Configure management interfaces
-    console.log('\n=== Step 3: Configuring Management Interfaces ===');
-    const mgmtInterfaces = config.managementInterfaces || ['ether1'];
-    for (const iface of mgmtInterfaces) {
-      if (typeof iface === 'string') {
-        try {
-          await mt.exec(`/interface bridge port add bridge=bridge interface=${iface}`);
-          console.log(`✓ Added ${iface} to bridge`);
-        } catch (e) {
-          if (e.message.includes('already have interface')) {
-            console.log(`✓ ${iface} already in bridge`);
-          } else {
-            console.log(`⚠️  Could not add ${iface}: ${e.message}`);
-          }
-        }
-      } else if (iface.bond && Array.isArray(iface.bond)) {
-        // LACP bond configuration with deterministic MAC address
-        await configureLacpBond(mt, iface.bond);
-      }
-    }
-
-    // Disable unused interfaces
-    const disabledInterfaces = config.disabledInterfaces || [];
-    for (const iface of disabledInterfaces) {
-      try {
-        await mt.exec(`/interface ethernet set [find default-name=${iface}] disabled=yes`);
-        console.log(`✓ Disabled ${iface}`);
-      } catch (e) {
-        console.log(`⚠️  Could not disable ${iface}: ${e.message}`);
-      }
-    }
+    await configureManagementInterfaces(mt, config);
+    await configureDisabledInterfaces(mt, config);
 
     // Step 4: Enable DHCP client
-    console.log('\n=== Step 4: Establishing Management via DHCP ===');
-    try {
-      await mt.exec('/ip dhcp-client add interface=bridge disabled=no');
-      console.log('✓ Added DHCP client on bridge');
-    } catch (e) {
-      if (e.message.includes('already have')) {
-        console.log('✓ DHCP client already exists');
-      }
-    }
+    await enableDhcpClient(mt);
 
     // Step 4.5: Configure CAPsMAN VLAN (if specified)
     const capsmanVlanIp = await configureCapsmanVlan(mt, config);
 
     // Step 5: Configure WiFi interfaces for CAPsMAN management
-    console.log('\n=== Step 5: Configuring WiFi Interfaces for CAPsMAN ===');
+    console.log('\n=== Configuring WiFi Interfaces for CAPsMAN ===');
 
-    // Apply local channel overrides if specified
     const wifiConfig = config.wifi || {};
-
-    // Get board info to detect radio layout
-    let interface24 = 'wifi1';
-    let interface5 = 'wifi2';
-    try {
-      const resource = await mt.exec('/system resource print');
-      const boardMatch = resource.match(/board-name:\s*([^\n]+)/);
-      const boardName = boardMatch ? boardMatch[1].trim().toLowerCase() : '';
-      const swappedRadioDevices = ['cap ax', 'cap ac'];
-      if (swappedRadioDevices.some(d => boardName.includes(d))) {
-        interface24 = 'wifi2';
-        interface5 = 'wifi1';
-        console.log(`ℹ️  ${boardMatch[1].trim()}: Swapped radio layout`);
-      }
-    } catch (e) {
-      console.log('⚠️  Could not detect board, assuming standard layout');
-    }
+    const { interface24, interface5 } = await detectRadioLayout(mt);
 
     // Apply local channel settings (these override controller defaults)
-    if (wifiConfig['2.4GHz']) {
-      const config24 = wifiConfig['2.4GHz'];
-      const commands = [];
-      if (config24.channel) {
-        const freq = CHANNEL_FREQ_24GHZ[config24.channel];
-        if (freq) commands.push(`channel.frequency=${freq}`);
-      }
-      if (config24.txPower) commands.push(`channel.tx-power=${config24.txPower}`);
-      if (commands.length > 0) {
-        try {
-          await mt.exec(`${wifiPath} set ${interface24} ${commands.join(' ')}`);
-          console.log(`✓ Applied local 2.4GHz settings: ${commands.join(', ')}`);
-        } catch (e) {
-          console.log(`⚠️  2.4GHz settings: ${e.message}`);
-        }
-      }
-    }
-
-    if (wifiConfig['5GHz']) {
-      const config5 = wifiConfig['5GHz'];
-      const commands = [];
-      if (config5.channel) {
-        const freq = CHANNEL_FREQ_5GHZ[config5.channel];
-        if (freq) commands.push(`channel.frequency=${freq}`);
-      }
-      if (config5.txPower) commands.push(`channel.tx-power=${config5.txPower}`);
-      if (commands.length > 0) {
-        try {
-          await mt.exec(`${wifiPath} set ${interface5} ${commands.join(' ')}`);
-          console.log(`✓ Applied local 5GHz settings: ${commands.join(', ')}`);
-        } catch (e) {
-          console.log(`⚠️  5GHz settings: ${e.message}`);
-        }
-      }
-    }
+    await applyBandSettings(mt, '2.4GHz', interface24, wifiConfig['2.4GHz'], wifiPath);
+    await applyBandSettings(mt, '5GHz', interface5, wifiConfig['5GHz'], wifiPath);
 
     // Set interfaces to CAPsMAN-managed mode
     try {
@@ -878,18 +934,16 @@ async function configureCap(config = {}) {
     }
 
     // Step 6: Enable CAP mode
-    console.log('\n=== Step 6: Enabling CAP Mode ===');
+    console.log('\n=== Enabling CAP Mode ===');
 
     // Resolve FQDNs to IP addresses (RouterOS caps-man-addresses only accepts IPs)
     const dns = require('dns').promises;
     const resolvedAddresses = [];
     for (const addr of controllerAddresses) {
-      // Check if already an IP address
       if (/^\d+\.\d+\.\d+\.\d+$/.test(addr)) {
         resolvedAddresses.push(addr);
         console.log(`✓ Controller IP: ${addr}`);
       } else {
-        // Resolve FQDN to IP
         try {
           const result = await dns.lookup(addr);
           resolvedAddresses.push(result.address);
@@ -909,18 +963,13 @@ async function configureCap(config = {}) {
     const addressList = resolvedAddresses.join(',');
 
     try {
-      // First disable CAP if it was enabled (clean state)
       await mt.exec(`${capPath} set enabled=no`);
     } catch (e) { /* ignore */ }
 
     try {
-      // Enable CAP with controller addresses and discovery interface
-      // Note: wifi-qcom only supports caps-man-addresses and discovery-interfaces
-      // Use CAPsMAN VLAN interface if configured, otherwise use bridge
       const discoveryInterface = capsmanVlanIp ? 'capsman-vlan' : 'bridge';
       await mt.exec(
-        `${capPath} set enabled=yes ` +
-        `caps-man-addresses=${addressList} ` +
+        `${capPath} set enabled=yes caps-man-addresses=${addressList} ` +
         `discovery-interfaces=${discoveryInterface}`
       );
       console.log(`✓ CAP enabled, connecting to: ${addressList}`);
@@ -929,34 +978,8 @@ async function configureCap(config = {}) {
       console.log(`✗ Failed to enable CAP: ${e.message}`);
     }
 
-    // Step 7: Configure Syslog (if specified)
-    if (config.syslog && config.syslog.server) {
-      console.log('\n=== Step 7: Configuring Remote Syslog ===');
-      const syslogServer = config.syslog.server;
-      const syslogPort = config.syslog.port || 514;
-      const syslogTopics = config.syslog.topics || ['wireless'];
-
-      try {
-        await mt.exec(`/system logging action remove [find name="remotesyslog"]`);
-      } catch (e) { /* ignore */ }
-
-      try {
-        await mt.exec(`/system logging remove [find action="remotesyslog"]`);
-      } catch (e) { /* ignore */ }
-
-      try {
-        await mt.exec(
-          `/system logging action add name="remotesyslog" target=remote ` +
-          `remote=${syslogServer} remote-port=${syslogPort}`
-        );
-        for (const topic of syslogTopics) {
-          await mt.exec(`/system logging add topics=${topic} action="remotesyslog"`);
-        }
-        console.log(`✓ Syslog configured: ${syslogServer}:${syslogPort}`);
-      } catch (e) {
-        console.log(`⚠️  Syslog config: ${e.message}`);
-      }
-    }
+    // Step 7: Configure Syslog (with device identity prefix for log attribution)
+    await configureSyslog(mt, config, deviceIdentity);
 
     console.log('\n========================================');
     console.log('✓✓✓ CAP Configuration Complete! ✓✓✓');
@@ -1007,69 +1030,10 @@ async function configureMikroTik(config = {}) {
     }
 
     // Step 0: Set device identity based on hostname (if FQDN provided)
-    console.log('=== Step 0: Setting Device Identity ===');
+    const deviceIdentity = await setDeviceIdentity(mt, config);
 
-    // Extract hostname from FQDN or use configured identity
-    let deviceIdentity = config.identity; // Allow explicit identity override
-
-    if (!deviceIdentity && config.host) {
-      // Check if host is FQDN (contains dots) and NOT an IP address
-      if (config.host.includes('.') && !config.host.match(/^\d+\.\d+\.\d+\.\d+$/)) {
-        // Extract hostname from FQDN (everything before first dot)
-        deviceIdentity = config.host.split('.')[0];
-        console.log(`✓ Extracted hostname from FQDN: ${deviceIdentity}`);
-      } else if (!config.host.match(/^\d+\.\d+\.\d+\.\d+$/)) {
-        // If not an IP address and not FQDN, use it as hostname
-        deviceIdentity = config.host;
-        console.log(`✓ Using host as identity: ${deviceIdentity}`);
-      }
-    }
-
-    if (deviceIdentity) {
-      try {
-        await mt.exec(`/system identity set name="${deviceIdentity}"`);
-        console.log(`✓ Device identity set to: ${deviceIdentity}`);
-      } catch (e) {
-        console.log(`⚠️  Could not set device identity: ${e.message}`);
-      }
-    } else {
-      console.log('⚠️  No hostname found to set as identity (using IP address for connection)');
-    }
-
-    // Step 0.5: Ensure Bridge Exists (for fresh devices)
-    console.log('\n=== Step 0.5: Ensuring Basic Infrastructure ===');
-
-    // Check if bridge exists, create if not
-    try {
-      const bridges = await mt.exec('/interface bridge print terse where name=bridge');
-      if (!bridges || !bridges.trim()) {
-        await mt.exec('/interface bridge add name=bridge');
-        console.log('✓ Created bridge');
-      } else {
-        console.log('✓ Bridge already exists');
-      }
-    } catch (e) {
-      // If print fails, try to add anyway
-      try {
-        await mt.exec('/interface bridge add name=bridge');
-        console.log('✓ Created bridge');
-      } catch (addErr) {
-        if (addErr.message.includes('already')) {
-          console.log('✓ Bridge already exists');
-        } else {
-          console.log('⚠️  Could not verify/create bridge: ' + addErr.message);
-        }
-      }
-    }
-
-    // Step 1: Ensure Bridge VLAN Filtering is DISABLED (for safety)
-    console.log('\n=== Step 1: Ensuring Safe Bridge Configuration ===');
-    try {
-      await mt.exec('/interface bridge set bridge vlan-filtering=no');
-      console.log('✓ VLAN filtering is DISABLED (safe for management)');
-    } catch (e) {
-      console.log('⚠️  Could not disable VLAN filtering: ' + e.message);
-    }
+    // Step 0.5-1: Ensure bridge exists and disable VLAN filtering
+    await ensureBridgeInfrastructure(mt);
 
     // Step 2: Configure Bridge Ports FIRST (before removing default IP)
     // This ensures management access is established before we remove the default config
@@ -1863,59 +1827,8 @@ async function configureMikroTik(config = {}) {
       }
     }
 
-    // Step 8: Configure Syslog (if specified)
-    if (config.syslog && config.syslog.server) {
-      console.log('\n=== Step 8: Configuring Remote Syslog ===');
-
-      const syslogServer = config.syslog.server;
-      const syslogPort = config.syslog.port || 514;
-      const syslogTopics = config.syslog.topics || ['wireless'];
-      const syslogActionName = 'remotesyslog';  // MikroTik only allows letters and numbers
-
-      try {
-        // Remove existing remote syslog action if it exists (to ensure idempotency)
-        try {
-          await mt.exec(`/system logging action remove [find name="${syslogActionName}"]`);
-          console.log(`✓ Removed existing syslog action "${syslogActionName}"`);
-        } catch (e) {
-          // Ignore - action might not exist
-        }
-
-        // Remove existing logging rules for our action
-        try {
-          await mt.exec(`/system logging remove [find action="${syslogActionName}"]`);
-          console.log('✓ Removed existing syslog logging rules');
-        } catch (e) {
-          // Ignore - rules might not exist
-        }
-
-        // Create remote syslog action
-        // Note: Using 'default' format because 'syslog' format breaks some syslog receivers
-        // WAP identification should be done via source IP in the receiver
-        await mt.exec(
-          `/system logging action add ` +
-          `name="${syslogActionName}" ` +
-          `target=remote ` +
-          `remote=${syslogServer} ` +
-          `remote-port=${syslogPort}`
-        );
-        console.log(`✓ Created syslog action: ${syslogServer}:${syslogPort}`);
-
-        // Add logging rules for each topic
-        for (const topic of syslogTopics) {
-          await mt.exec(
-            `/system logging add ` +
-            `topics=${topic} ` +
-            `action="${syslogActionName}"`
-          );
-          console.log(`✓ Logging topic "${topic}" to remote syslog`);
-        }
-
-        console.log(`✓ Syslog configured - WiFi events will be sent to ${syslogServer}:${syslogPort}`);
-      } catch (e) {
-        console.log(`⚠️  Could not configure syslog: ${e.message}`);
-      }
-    }
+    // Step 8: Configure Syslog (with device identity prefix for log attribution)
+    await configureSyslog(mt, config, deviceIdentity);
 
     console.log('\n========================================');
     console.log('✓✓✓ Configuration Complete! ✓✓✓');
@@ -2423,6 +2336,7 @@ async function backupMikroTikConfig(credentials = {}) {
         // Parse the remote server and port
         const remoteMatch = actionOutput.match(/remote=([^\s]+)/);
         const portMatch = actionOutput.match(/remote-port=(\d+)/);
+        const prefixMatch = actionOutput.match(/prefix="([^"]+)"/);
 
         if (remoteMatch) {
           config.syslog = {
@@ -2443,6 +2357,10 @@ async function backupMikroTikConfig(credentials = {}) {
           }
 
           console.log(`✓ Found syslog configuration: ${config.syslog.server}:${config.syslog.port}`);
+          // Prefix is derived from device identity at apply time, so we just log it for visibility
+          if (prefixMatch) {
+            console.log(`  Prefix: ${prefixMatch[1]} (derived from device identity)`);
+          }
           console.log(`  Topics: ${config.syslog.topics.join(', ')}`);
         }
       } else {
