@@ -169,6 +169,107 @@ function getCapPath(wifiPackage) {
 }
 
 /**
+ * Configure LACP bond with deterministic MAC address for DHCP static leases
+ * Uses forced-mac-address from primary interface to ensure consistent MAC
+ *
+ * @param {MikroTikSSH} mt - Connected SSH session
+ * @param {Array} bondMembers - Array of interface names to bond (e.g., ['ether1', 'ether2'])
+ * @param {string} bondName - Name for the bond interface (default: 'bond1')
+ * @returns {string} - The bond interface name
+ */
+async function configureLacpBond(mt, bondMembers, bondName = 'bond1') {
+  console.log(`\n=== Configuring LACP Bond (${bondName}) ===`);
+
+  // First, remove bond members from bridge if they're already added
+  for (const member of bondMembers) {
+    try {
+      await mt.exec(`/interface bridge port remove [find interface=${member}]`);
+      console.log(`✓ Removed ${member} from bridge (preparing for bond)`);
+    } catch (e) {
+      // Interface might not be in bridge
+    }
+  }
+
+  // Get ORIGINAL MAC address of first interface BEFORE creating bond
+  // Must use orig-mac-address, not mac-address, since current MAC might be
+  // modified by previous bonding configuration
+  let primaryMac = null;
+  try {
+    const ethDetail = await mt.exec(`/interface ethernet print detail where default-name=${bondMembers[0]}`);
+    // Use orig-mac-address to get the original hardware MAC
+    const macMatch = ethDetail.match(/orig-mac-address=([0-9A-Fa-f:]+)/);
+    if (macMatch) {
+      primaryMac = macMatch[1];
+      console.log(`✓ Using ${bondMembers[0]} original MAC for bond: ${primaryMac}`);
+    } else {
+      // Fallback to mac-address if orig-mac-address not found
+      const fallbackMatch = ethDetail.match(/mac-address=([0-9A-Fa-f:]+)/);
+      if (fallbackMatch) {
+        primaryMac = fallbackMatch[1];
+        console.log(`✓ Using ${bondMembers[0]} MAC for bond: ${primaryMac} (orig MAC not found)`);
+      }
+    }
+  } catch (e) {
+    console.log(`⚠️  Could not read ${bondMembers[0]} MAC address: ${e.message}`);
+  }
+
+  // Create or update bond interface
+  try {
+    // First check if bond exists
+    const bondCheck = await mt.exec(`/interface bonding print where name=${bondName}`);
+
+    // Build bond command with forced-mac-address if we have it
+    const macParam = primaryMac ? ` forced-mac-address=${primaryMac}` : '';
+
+    if (!bondCheck || bondCheck.includes('no such item') || !bondCheck.includes(bondName)) {
+      // Create new bond with LACP (802.3ad mode)
+      // Use forced-mac-address to ensure consistent MAC for DHCP static leases
+      await mt.exec(`/interface bonding add name=${bondName} slaves="${bondMembers.join(',')}" mode=802.3ad lacp-rate=30secs transmit-hash-policy=layer-2-and-3${macParam}`);
+      console.log(`✓ Created LACP bond ${bondName} with members: ${bondMembers.join(', ')}`);
+    } else {
+      // Update existing bond
+      await mt.exec(`/interface bonding set [find name=${bondName}] slaves="${bondMembers.join(',')}" mode=802.3ad lacp-rate=30secs transmit-hash-policy=layer-2-and-3${macParam}`);
+      console.log(`✓ Updated LACP bond ${bondName} with members: ${bondMembers.join(', ')}`);
+    }
+  } catch (e) {
+    console.log(`⚠️  Bond configuration error: ${e.message}`);
+    // Try alternative approach for existing bonds
+    const macParam = primaryMac ? ` forced-mac-address=${primaryMac}` : '';
+    try {
+      await mt.exec(`/interface bonding remove [find name=${bondName}]`);
+      await mt.exec(`/interface bonding add name=${bondName} slaves="${bondMembers.join(',')}" mode=802.3ad lacp-rate=30secs transmit-hash-policy=layer-2-and-3${macParam}`);
+      console.log(`✓ Recreated LACP bond ${bondName}`);
+    } catch (e2) {
+      console.log(`✗ Failed to configure bond: ${e2.message}`);
+    }
+  }
+
+  // Add bond to bridge
+  try {
+    await mt.exec(`/interface bridge port add bridge=bridge interface=${bondName}`);
+    console.log(`✓ Added ${bondName} to bridge`);
+  } catch (e) {
+    if (e.message.includes('already have interface')) {
+      console.log(`✓ ${bondName} already in bridge`);
+    } else {
+      console.log(`⚠️  Could not add bond to bridge: ${e.message}`);
+    }
+  }
+
+  // Enable all bond member interfaces
+  for (const member of bondMembers) {
+    try {
+      await mt.exec(`/interface ethernet set [find default-name=${member}] disabled=no`);
+      console.log(`✓ Enabled ${member} for bonding`);
+    } catch (e) {
+      console.log(`⚠️  Could not enable ${member}: ${e.message}`);
+    }
+  }
+
+  return bondName;
+}
+
+/**
  * Configure dedicated CAPsMAN VLAN for L2 CAP↔Controller connectivity
  * Creates VLAN interface, assigns static IP, and adds firewall rules
  *
@@ -356,8 +457,10 @@ async function configureController(config = {}) {
             console.log(`⚠️  Could not add ${iface}: ${e.message}`);
           }
         }
+      } else if (iface.bond && Array.isArray(iface.bond)) {
+        // LACP bond configuration with deterministic MAC address
+        await configureLacpBond(mt, iface.bond);
       }
-      // Note: LACP bonds for controller would go here if needed
     }
 
     // Disable unused interfaces
@@ -674,6 +777,9 @@ async function configureCap(config = {}) {
             console.log(`⚠️  Could not add ${iface}: ${e.message}`);
           }
         }
+      } else if (iface.bond && Array.isArray(iface.bond)) {
+        // LACP bond configuration with deterministic MAC address
+        await configureLacpBond(mt, iface.bond);
       }
     }
 
