@@ -28,6 +28,9 @@ module.exports = {
   configureController: lib.configureController,
   configureCap: lib.configureCap,
   configureCapInterfacesOnController: lib.configureCapInterfacesOnController,
+  configureAccessLists: lib.configureAccessLists,
+  backupAccessLists: lib.backupAccessLists,
+  extractHostname: lib.extractHostname,
   backupMikroTikConfig: lib.backupMikroTikConfig,
   MikroTikSSH: lib.MikroTikSSH
 };

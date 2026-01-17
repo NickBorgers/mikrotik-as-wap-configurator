@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const yaml = require('js-yaml');
-const { backupMikroTikConfig } = require('./mikrotik-no-vlan-filtering.js');
+const { backupMikroTikConfig, extractHostname } = require('./mikrotik-no-vlan-filtering.js');
 
 async function main() {
   const args = process.argv.slice(2);
@@ -265,6 +265,43 @@ async function main() {
   // Add capsmanVlan at top level if found
   if (deploymentCapsmanVlan) {
     results.capsmanVlan = deploymentCapsmanVlan;
+  }
+
+  // Distribute locked devices from controller to their target device configs
+  // Access-list rules are stored on the controller but belong to the device they lock clients to
+  for (const device of results.devices) {
+    if (device._lockedDevices && device._lockedDevices.length > 0) {
+      console.log(`\nDistributing ${device._lockedDevices.length} locked device(s) from controller...`);
+
+      for (const ld of device._lockedDevices) {
+        // Find the target device by lockToAp
+        const targetDevice = results.devices.find(d => {
+          const deviceIdentity = d.identity || extractHostname(d.device?.host);
+          return deviceIdentity === ld.lockToAp;
+        });
+
+        if (targetDevice) {
+          if (!targetDevice.lockedDevices) {
+            targetDevice.lockedDevices = [];
+          }
+          // Add the locked device config (without lockToAp since it's implicit)
+          const lockedDeviceConfig = {
+            hostname: ld.hostname,
+            mac: ld.mac
+          };
+          if (ld.ssid) {
+            lockedDeviceConfig.ssid = ld.ssid;
+          }
+          targetDevice.lockedDevices.push(lockedDeviceConfig);
+          console.log(`  ✓ ${ld.hostname} (${ld.mac}) → ${ld.lockToAp}`);
+        } else {
+          console.log(`  ⚠️  Could not find target device for ${ld.hostname} → ${ld.lockToAp}`);
+        }
+      }
+
+      // Remove the temporary _lockedDevices from controller config
+      delete device._lockedDevices;
+    }
   }
 
   const header = `# MikroTik Multi-Device Configuration

@@ -16,6 +16,7 @@
 - `backup-config.js` - CLI tool that exports current device config to YAML
 - `apply-multiple-devices.js` - CLI tool for multi-device configuration
 - `backup-multiple-devices.js` - CLI tool for multi-device backup
+- `lib/access-list.js` - WAP locking via access-list rules
 - `config.yaml` - Active device configuration (gitignored, contains credentials)
 - `config.example.yaml` - Example for documentation and Docker image
 - `multiple-devices.yaml` - Multi-device configuration file (gitignored, contains credentials)
@@ -160,6 +161,34 @@ const BAND_TO_INTERFACE = {
 - After renaming, interface names correctly reflect actual radio bands
 - Virtual interfaces (SSIDs) inherit correct naming from master interfaces
 
+**WAP Locking (Added v4.4.0)**
+- Lock specific WiFi clients to specific access points using access-list rules
+- Useful for stationary devices (Sonos, IoT) that roam unnecessarily
+- Problem: Devices may roam to distant APs with weak signal, causing audio dropouts
+- Solution: Create access-list rules that ACCEPT on target AP and REJECT on all others
+- Rules are stored on the CAPsMAN controller and applied per-interface
+- Configuration in `multiple-devices.yaml`:
+  ```yaml
+  devices:
+    - device: { host: shed-wap.example.com, ... }
+      role: cap
+      lockedDevices:
+        - hostname: sonos-barn        # Human-readable name (used in comment)
+          mac: "80:4A:F2:8B:D2:FA"    # Client MAC address
+          ssid: IoT-Devices           # Optional: specific SSID only
+        - hostname: smart-thermostat  # No ssid = lock on ALL SSIDs
+          mac: "48:A6:B8:8E:49:2C"
+  ```
+- Deployment: Phase 2.75 in `apply-multiple-devices.js` (after CAP interface config)
+- Backup: `backup-multiple-devices.js` reads rules from controller, distributes to target devices
+- Idempotent: removes existing rules for MAC before creating new ones
+- Commands generated:
+  ```
+  /interface/wifi/access-list add mac-address="..." interface=<target-ap-interface> action=accept comment="hostname - lock to ap"
+  /interface/wifi/access-list add mac-address="..." interface=<other-ap-interface> action=reject comment="hostname - reject (locked to ap)"
+  ```
+- Debug: `/interface/wifi/access-list print detail` on controller
+
 ### MikroTik RouterOS v7 WiFi Quirks
 
 **Inline Configuration (not separate objects)**
@@ -229,6 +258,7 @@ run().catch(e => console.error(e.message));
 - `/interface/wifi/registration-table print` - Show connected clients
 - `/interface/wifi/capsman print` - CAPsMAN status
 - `/interface/wifi/capsman/remote-cap print` - Connected CAPs
+- `/interface/wifi/access-list print detail` - Show WAP locking rules
 - `/system/resource print` - System info
 
 ## Testing

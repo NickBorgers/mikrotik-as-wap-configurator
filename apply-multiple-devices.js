@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const yaml = require('js-yaml');
-const { configureMikroTik, configureCapInterfacesOnController } = require('./mikrotik-no-vlan-filtering.js');
+const { configureMikroTik, configureCapInterfacesOnController, configureAccessLists, extractHostname } = require('./mikrotik-no-vlan-filtering.js');
 
 function loadConfig(configFile) {
   try {
@@ -338,6 +338,26 @@ async function main() {
       } catch (error) {
         console.error(`⚠️  CAP interface configuration warning: ${error.message}`);
         console.error('    CAP interfaces may need manual configuration.');
+      }
+    }
+
+    // Phase 2.75: Configure access-lists (WAP locking)
+    // Collect lockedDevices from all device configs
+    const allLockedDevices = devices.flatMap(device =>
+      (device.lockedDevices || []).map(ld => ({
+        ...ld,
+        lockToAp: device.identity || extractHostname(device.device?.host)
+      }))
+    );
+
+    if (allLockedDevices.length > 0) {
+      console.log(`\n=== Phase 2.75: Configuring Access-Lists (${allLockedDevices.length} locked device(s)) ===\n`);
+      try {
+        await configureAccessLists(controllerConfig, allLockedDevices, deploymentSsids, devices);
+        console.log('✓ Access-list configuration complete');
+      } catch (error) {
+        console.error(`⚠️  Access-list configuration warning: ${error.message}`);
+        console.error('    Locked devices may not be properly configured.');
       }
     }
 

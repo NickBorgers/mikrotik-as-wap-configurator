@@ -211,6 +211,13 @@ devices:
 #   - Firewall rules block admin access via CAPsMAN VLAN (security)
 #   - Only CAPWAP traffic (UDP 5246-5247) allowed on this VLAN
 #
+# WAP Locking (lockedDevices):
+#   - Lock specific WiFi clients to specific access points
+#   - Useful for stationary devices (Sonos, IoT) that roam unnecessarily
+#   - Uses access-list rules: ACCEPT on target AP, REJECT on others
+#   - Configured per-device, applied on the controller
+#   - Optional ssid field to lock to specific SSID only
+#
 # To use this example, comment out the standalone devices above and
 # uncomment the CAPsMAN deployment below.
 # ============================================================================
@@ -295,6 +302,14 @@ devices:
 #         channel: 6      # Different from controller
 #       5GHz:
 #         channel: 52     # Different from controller
+#     # WAP Locking - lock specific clients to this AP
+#     # Useful for stationary devices (Sonos, IoT) that shouldn't roam
+#     lockedDevices:
+#       - hostname: sonos-living-room  # Human-readable name (used in comment)
+#         mac: "80:4A:F2:8B:D2:FA"      # Client MAC address
+#         ssid: IoT-Devices             # Optional: lock to specific SSID only
+#       - hostname: smart-thermostat   # No ssid = lock on ALL SSIDs this AP serves
+#         mac: "48:A6:B8:8E:49:2C"
 #
 #   # CAP 2 - Third set of non-overlapping channels
 #   - device:
