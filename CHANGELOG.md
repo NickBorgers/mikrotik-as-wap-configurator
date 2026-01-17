@@ -1,5 +1,37 @@
 # Changelog
 
+## [4.3.8] - 2026-01-17 - Fix Virtual Interface Master-Interface References After Rename
+
+### Fixed - Controller Virtual Interface master-interface References Swapped
+- **Bug**: After master interface renaming (v4.3.1 feature), virtual interfaces had incorrect `master-interface` references
+- **Symptom**: Interfaces named `-2g-ssidX` pointed to `-5g` master interfaces and vice versa
+- **Root cause**: When master interfaces are swapped, MikroTik updates the virtual's `master-interface` property to follow the renamed master, but the virtual interface NAME is not updated
+- **Example**: After swap, `cap-2g-ssid2` with `master-interface=cap-5g` (name says 2g, master says 5g)
+
+### Solution
+After swapping master interface names, also rename virtual interfaces to match their (renamed) masters:
+1. Find all virtual interfaces for the swapped CAP identity
+2. Compare virtual interface name band (`-2g-` or `-5g-`) with master-interface band
+3. If mismatched, rename virtual interface to match its master
+
+### Example Log Output
+```
+=== Renaming interfaces for managed-wap-north ===
+  ✓ managed-wap-north-2g → managed-wap-north-swap-temp (temp)
+  ✓ managed-wap-north-5g → managed-wap-north-2g
+  ✓ managed-wap-north-swap-temp → managed-wap-north-5g
+  Checking 4 virtual interface(s) for managed-wap-north...
+  ✓ Virtual: managed-wap-north-2g-ssid2 → managed-wap-north-5g-ssid2
+  ✓ Virtual: managed-wap-north-2g-ssid3 → managed-wap-north-5g-ssid3
+```
+
+### Files Modified
+- `lib/wifi-config.js` - Added `renameVirtualInterfacesForSwappedMasters()` function
+
+### Related
+- Completes fix for issue 005 (Controller Virtual Interface master-interface References Swapped)
+- Related to v4.3.1 CAPsMAN Radio Detection & Interface Renaming feature
+
 ## [4.3.7] - 2026-01-17 - Fix TX Power Not Applied on CAP Interfaces
 
 ### Fixed - Per-Device TX Power in CAPsMAN Phase 2.5
