@@ -1,5 +1,37 @@
 # Changelog
 
+## [4.3.10] - 2026-01-17 - Fix DHCP Client Removal for LACP Bond Slaves
+
+### Fixed - Invalid DHCP Clients on Bond Slave Interfaces
+- **Bug**: When configuring LACP bonds, the default DHCP client on ether1 becomes invalid but wasn't removed
+- **Symptom**: Devices with LACP bonds lose internet connectivity - pings fail, DNS resolution fails, software updates fail
+- **Root cause**: MikroTik marks DHCP clients on slave interfaces as invalid, but they still obtain IP addresses and create duplicate routes, causing incorrect source address selection
+- **Impact**: Affected devices with LACP bonding (typically those with redundant uplinks)
+
+### Solution
+When configuring LACP bonds, the script now removes DHCP clients from bond member interfaces before making them slaves. This prevents:
+1. Invalid DHCP clients obtaining IP addresses on slave interfaces
+2. Duplicate default routes causing ECMP behavior
+3. Wrong source address selection for outbound traffic
+
+### Technical Details
+- DHCP clients cannot run on slave/passthrough interfaces in MikroTik
+- Even when marked as INVALID, the DHCP client was still receiving an IP and creating routes
+- The duplicate routes caused the device to use the slave interface's IP as source address
+- Upstream routers/gateways wouldn't respond to traffic from the unexpected source IP
+
+### Files Modified
+- `lib/configure.js` - Added DHCP client removal step before bond creation
+- `lib/infrastructure.js` - Added DHCP client removal step in `configureLacpBond()`
+
+### Verification
+After applying configuration, devices should have only one DHCP client (on bridge):
+```
+/ip/dhcp-client print
+# INTERFACE  USE-PEER-DNS  ADD-DEFAULT-ROUTE  STATUS  ADDRESS
+0 bridge     yes           yes                bound   10.x.x.x/24
+```
+
 ## [4.3.9] - 2026-01-17 - Apply Transition Threshold to wifi-qcom Steering Profiles
 
 ### Fixed - Transition Threshold Not Applied (Issue 006)
