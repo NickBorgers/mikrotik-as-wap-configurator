@@ -324,8 +324,16 @@ async function main() {
       console.log('⏳ Waiting 3s for CAP interfaces to appear...');
       await new Promise(resolve => setTimeout(resolve, 3000));
 
+      // Build array of CAP device configs with wifi settings (txPower, etc.)
+      // These are passed to configure per-device settings on CAP interfaces
+      const capDeviceConfigs = caps.map(cap => ({
+        host: cap.device?.host,
+        identity: cap.identity,
+        wifi: cap.wifi
+      }));
+
       try {
-        await configureCapInterfacesOnController(controllerConfig);
+        await configureCapInterfacesOnController(controllerConfig, capDeviceConfigs);
         console.log('✓ CAP interface configuration complete');
       } catch (error) {
         console.error(`⚠️  CAP interface configuration warning: ${error.message}`);

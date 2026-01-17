@@ -1,5 +1,44 @@
 # Changelog
 
+## [4.3.7] - 2026-01-17 - Fix TX Power Not Applied on CAP Interfaces
+
+### Fixed - Per-Device TX Power in CAPsMAN Phase 2.5
+- **TX power now applied correctly to CAP interfaces** during Phase 2.5 configuration
+- Per-device `wifi.2.4GHz.txPower` and `wifi.5GHz.txPower` settings are now passed from CAP device configs to the controller when configuring CAP interfaces
+
+### Root Cause
+The `configureCapInterfacesOnController()` function was only receiving the controller's configuration, not the individual CAP device configurations. This meant per-device settings like `txPower` were never applied to CAP interfaces.
+
+### Technical Details
+**Problem:** CAP interfaces like `managed-wap-north-2g` were not receiving their configured TX power values.
+
+**Solution:**
+1. Modified `configureCapInterfacesOnController()` to accept an array of CAP device configs
+2. Updated `apply-multiple-devices.js` to pass CAP device configs (host, identity, wifi) to Phase 2.5
+3. Extended `configureWifiInterface()` to accept and apply `bandSettings.txPower`
+4. CAP identity is extracted from interface name (e.g., `managed-wap-north-2g` → `managed-wap-north`) to look up the correct device config
+
+### Files Modified
+- `lib/capsman.js` - Accept `capDeviceConfigs` array, pass band settings to interface configuration
+- `lib/wifi-config.js` - Accept `bandSettings` parameter, apply `configuration.tx-power` when specified
+- `apply-multiple-devices.js` - Build and pass CAP device configs to Phase 2.5
+
+### Example
+With this fix, a CAP configuration like:
+```yaml
+- device:
+    host: managed-wap-north.nickborgers.net
+  role: cap
+  wifi:
+    2.4GHz:
+      txPower: 10
+```
+
+Now correctly results in:
+```
+managed-wap-north-2g configuration.tx-power=10
+```
+
 ## [4.3.6] - 2026-01-17 - Consolidate wifi-qcom/wifiwave2 Handling
 
 ### Refactored - WiFi Package Detection and Path Handling
