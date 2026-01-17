@@ -1,5 +1,56 @@
 # Changelog
 
+## [4.4.0] - 2026-01-17 - WAP Locking via Access-List Rules
+
+### Added - WAP Locking Feature
+- **Lock WiFi clients to specific APs** - Prevent stationary devices from roaming unnecessarily
+- **YAML-based configuration** - Define `lockedDevices` per device in `multiple-devices.yaml`
+- **Automatic rule generation** - Creates ACCEPT rules on target AP and REJECT rules on all others
+- **SSID-specific locking** - Optionally lock to specific SSID only, or all SSIDs the AP serves
+- **Idempotent operation** - Removes existing rules for MAC before creating new ones
+
+### Use Cases
+- **Sonos speakers** - Prevent audio dropouts from unnecessary roaming
+- **IoT devices** - Keep stationary devices like SPAN panels, Powerwalls on nearest AP
+- **Smart home devices** - Ensure reliable connectivity for devices that shouldn't roam
+
+### Configuration
+```yaml
+devices:
+  - device:
+      host: shed-wap.nickborgers.net
+    role: cap
+    lockedDevices:
+      - hostname: sonos-barn        # Human-readable name
+        mac: "80:4A:F2:8B:D2:FA"    # Client MAC address
+        ssid: PartlySonos           # Optional: specific SSID only
+      - hostname: smart-thermostat  # No ssid = all SSIDs
+        mac: "48:A6:B8:8E:49:2C"
+```
+
+### Implementation Details
+- **Phase 2.75** - New deployment phase after CAP interface configuration
+- **Rules on controller** - Access-list rules stored on CAPsMAN controller
+- **Backup support** - `backup-multiple-devices.js` reads rules and distributes to target device configs
+- **Debug command**: `/interface/wifi/access-list print detail` on controller
+
+### Files Added/Modified
+- `lib/access-list.js` - NEW: Core access-list logic (`configureAccessLists`, `backupAccessLists`)
+- `lib/index.js` - Export new functions
+- `lib/backup.js` - Add access-list backup step
+- `apply-multiple-devices.js` - Add Phase 2.75 for access-list configuration
+- `backup-multiple-devices.js` - Distribute locked devices to target device configs
+- `mikrotik-no-vlan-filtering.js` - Re-export new functions
+- `multiple-devices.example.yaml` - Add lockedDevices example
+- `CLAUDE.md` - Document the feature
+
+### Verification
+After applying, check rules on controller:
+```
+/interface/wifi/access-list print detail
+# Shows ACCEPT rules for target APs, REJECT rules for all others
+```
+
 ## [4.3.10] - 2026-01-17 - Fix DHCP Client Removal for LACP Bond Slaves
 
 ### Fixed - Invalid DHCP Clients on Bond Slave Interfaces
