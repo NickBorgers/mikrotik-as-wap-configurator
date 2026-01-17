@@ -8,6 +8,8 @@ services:
       - ../..:/workspaces:cached
       # Mount the current directory as the workspace
       - .:/workspace:cached
+      # Mount gh CLI config for GitHub authentication passthrough
+      - ${HOME}/.config/gh:/home/node/.config/gh:cached
     # Overrides default command so things don't shut down after the process ends
     command: sleep infinity
     # Keep container running
