@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.4.1] - 2026-01-17 - Fix Docker Build
+
+### Fixed - Docker Image Missing lib/ Directory
+- **Bug**: Docker images since v4.3.2 were broken - missing `lib/` directory
+- **Symptom**: `Error: Cannot find module './lib'` when running Docker image
+- **Root cause**: Dockerfile was not updated when code was modularized in v4.3.2
+- **Fix**: Added `COPY lib ./lib` to Dockerfile
+- Also added missing `backup-config.js` and `backup-multiple-devices.js` to Docker image
+
 ## [4.4.0] - 2026-01-17 - WAP Locking via Access-List Rules
 
 ### Added - WAP Locking Feature
