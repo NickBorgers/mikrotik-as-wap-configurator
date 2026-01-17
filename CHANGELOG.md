@@ -1,5 +1,57 @@
 # Changelog
 
+## [4.3.5] - 2026-01-17 - Add 802.11k (RRM) and 802.11v (WNM) Support
+
+### Added - 802.11k/v Support for wifi-qcom and Standalone Modes
+- **802.11k (RRM)** - Radio Resource Management / Neighbor Reports
+- **802.11v (WNM)** - Wireless Network Management / BSS Transition
+- Support added to both CAPsMAN (wifi-qcom) and standalone configurations
+- Steering profiles created automatically when RRM or WNM is enabled
+
+### Technical Details - wifi-qcom Steering Profiles
+wifi-qcom requires steering configuration as separate profile objects, not inline properties:
+
+```bash
+# Steering profile created per interface
+/interface/wifi/steering add name="steering-shed-wap-2g" rrm=yes wnm=yes
+
+# Interface references the profile
+/interface/wifi set shed-wap-2g steering="steering-shed-wap-2g" ...
+```
+
+### Configuration
+```yaml
+ssids:
+  - ssid: MyNetwork
+    passphrase: password
+    vlan: 100
+    bands: [2.4GHz, 5GHz]
+    roaming:
+      fastTransition: true  # 802.11r
+      rrm: true             # 802.11k - NEW
+      wnm: true             # 802.11v - NEW
+      transitionThreshold: -80  # Signal threshold for steering
+```
+
+### Files Modified
+- `lib/wifi-config.js` - Added steering profile creation for CAP interfaces
+- `lib/configure.js` - Added steering profile creation for standalone mode
+
+### Verification
+Steering profiles visible on controller:
+```
+/interface/wifi/steering print
+  - steering-shed-wap-2g rrm=yes wnm=yes
+  - steering-shed-wap-2g-ssid3 rrm=yes wnm=yes
+  - ...
+```
+
+Interface references steering profile:
+```
+/interface/wifi get shed-wap-2g steering
+steering=steering-shed-wap-2g
+```
+
 ## [4.3.4] - 2026-01-17 - Fix 802.11r Incorrectly Enabled on SSIDs Without Roaming
 
 ### Fixed - Fast Transition (802.11r) Applied to SSIDs Without Roaming Configuration
