@@ -1,5 +1,44 @@
 # Changelog
 
+## [4.3.6] - 2026-01-17 - Consolidate wifi-qcom/wifiwave2 Handling
+
+### Refactored - WiFi Package Detection and Path Handling
+- **Consolidated duplicate code** - `lib/configure.js` now uses centralized helpers instead of inline logic
+- **Uses `detectWifiPackage()`** from `lib/infrastructure.js` instead of duplicate detection code
+- **Uses `getWifiPath()`** from `lib/utils.js` instead of scattered inline ternary expressions
+- **Removed dead code** - Removed unreachable 'wireless' package branch (legacy package not supported)
+
+### Technical Details
+The codebase had two patterns for handling wifi-qcom vs wifiwave2:
+1. **Good pattern** (in lib/utils.js, lib/infrastructure.js, lib/capsman.js): Centralized helpers
+2. **Scattered pattern** (in lib/configure.js): Duplicate detection and inline path construction
+
+This release consolidates to the good pattern:
+
+**Before (duplicate detection in configure.js):**
+```javascript
+const packages = await mt.exec('/system package print terse where name~"wifi"');
+if (packages.includes('wifiwave2')) { ... }
+else if (packages.includes('wifi-qcom')) { ... }
+const wifiCmd = wifiPackage === 'wifiwave2' ? '/interface/wifiwave2' : '/interface/wifi';
+```
+
+**After (using centralized helpers):**
+```javascript
+const wifiPackage = await detectWifiPackage(mt);
+const wifiCmd = getWifiPath(wifiPackage);
+```
+
+### Files Modified
+- `lib/configure.js` - Refactored to use centralized `detectWifiPackage()` and `getWifiPath()`
+- `lib/wifi-config.js` - Updated comment for clarity on security.ft usage
+
+### Benefits
+- Single source of truth for package detection logic
+- Easier maintenance when package behavior changes
+- Cleaner, more readable code in configure.js
+- Reduced code duplication across modules
+
 ## [4.3.5] - 2026-01-17 - Add 802.11k (RRM) and 802.11v (WNM) Support
 
 ### Added - 802.11k/v Support for wifi-qcom and Standalone Modes
