@@ -1,5 +1,49 @@
 # Changelog
 
+## [4.3.1] - 2026-01-17 - CAPsMAN Radio Detection & Interface Renaming
+
+### Fixed - CAP Interface Band Detection and Naming
+- **Bug**: CAP interfaces were incorrectly named - `-2g` interfaces were actually 5GHz radios (and vice versa)
+- **Symptom**: Clients connecting to `<cap>-2g` SSIDs were actually on 5GHz
+- **Root cause**: MikroTik names CAP interfaces based on physical interface number, not actual radio band
+- **Affected devices**: cAP ax, cAP ac, and some wAP ax units
+- **Important discovery**: Even identical board models can have different radio layouts!
+
+### Solution - Automatic Interface Renaming
+- **Detect actual bands** via radio hardware query
+- **Rename misnamed interfaces** so `-2g` is ALWAYS 2.4GHz and `-5g` is ALWAYS 5GHz
+- Virtual interfaces inherit correct naming from master interfaces
+
+### How It Works
+1. **Detect actual bands** from `/interface/wifi/radio print detail`
+2. **Identify misnamed interfaces** where suffix doesn't match actual band
+3. **Swap interface names** using temp name to avoid conflicts:
+   ```
+   managed-wap-north-2g → managed-wap-north-swap-temp (temp)
+   managed-wap-north-5g → managed-wap-north-2g
+   managed-wap-north-swap-temp → managed-wap-north-5g
+   ```
+4. **Configure SSIDs** on correctly-named interfaces
+
+### New Functions
+- `getRadioBandMapping()` - Query radio hardware to get actual band for each interface
+- `renameCapInterfacesToMatchBand()` - Rename interfaces so suffix matches actual band
+- `getSwappedRadioCaps()` - Fallback: identify swapped devices by board type
+
+### Example Log Output
+```
+ℹ️  managed-wap-north-2g: Actual band is 5GHz (via radio hardware) - will rename
+
+=== Renaming interfaces for managed-wap-north ===
+  ✓ managed-wap-north-2g → managed-wap-north-swap-temp (temp)
+  ✓ managed-wap-north-5g → managed-wap-north-2g
+  ✓ managed-wap-north-swap-temp → managed-wap-north-5g
+
+Found 10 CAP interface(s):
+  - managed-wap-north-2g (2.4GHz)  ← Correct!
+  - managed-wap-north-5g (5GHz)    ← Correct!
+```
+
 ## [4.3.0] - 2026-01-16 - wifi-qcom CAPsMAN Support
 
 ### Added - wifi-qcom CAPsMAN Direct Interface Configuration

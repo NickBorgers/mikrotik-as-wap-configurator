@@ -143,6 +143,23 @@ const BAND_TO_INTERFACE = {
       disabled=no
   ```
 
+**CAPsMAN Radio Detection & Interface Renaming (Added v4.3.1)**
+- MikroTik names CAP interfaces based on physical interface number, NOT actual radio band
+- Problem: Many devices have swapped radios (wifi1=5GHz, wifi2=2.4GHz), including:
+  - cAP ax, cAP ac (always swapped)
+  - Some wAP ax units (varies by individual device!)
+- IMPORTANT: Even identical board models can have different radio layouts
+- Solution: Detect actual bands and **rename interfaces** so `-2g` is ALWAYS 2.4GHz, `-5g` is ALWAYS 5GHz
+- Detection: `/interface/wifi/radio print detail` shows `bands=2ghz-*` or `bands=5ghz-*`
+- Renaming process (swap names to avoid conflicts):
+  ```
+  managed-wap-north-2g → managed-wap-north-swap-temp (temp)
+  managed-wap-north-5g → managed-wap-north-2g
+  managed-wap-north-swap-temp → managed-wap-north-5g
+  ```
+- After renaming, interface names correctly reflect actual radio bands
+- Virtual interfaces (SSIDs) inherit correct naming from master interfaces
+
 ### MikroTik RouterOS v7 WiFi Quirks
 
 **Inline Configuration (not separate objects)**
