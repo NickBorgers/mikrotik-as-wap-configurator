@@ -1,5 +1,37 @@
 # Changelog
 
+## [4.3.9] - 2026-01-17 - Apply Transition Threshold to wifi-qcom Steering Profiles
+
+### Fixed - Transition Threshold Not Applied (Issue 006)
+- **Bug**: The `transitionThreshold` value from YAML configuration was not being applied to wifi-qcom steering profiles
+- **Symptom**: 802.11v BSS Transition Management didn't have proper signal thresholds configured
+- **Root cause**: The steering profile creation only set `rrm` and `wnm` properties, missing the `transition-threshold` parameter
+
+### Solution
+When creating wifi-qcom steering profiles with WNM enabled, now also set the `transition-threshold` parameter:
+1. Create steering profile with `rrm` and `wnm` settings
+2. Set `transition-threshold` separately (MikroTik quirk: can't be in add command)
+3. Handles gracefully on older RouterOS versions that may not support the parameter
+
+### Important Note
+Unsolicited 802.11v BSS transition management (which uses `transition-threshold`) requires **RouterOS 7.21beta2 or newer**. On earlier versions (like 7.18.x), the parameter is accepted but may not be functional until firmware is upgraded.
+
+### Example Log Output
+```
+Configuring far-bedroom-wap-2g with SSID: PartlyPrimary
+  ✓ Configured far-bedroom-wap-2g: SSID="PartlyPrimary", VLAN=100, 802.11r, 802.11k, 802.11v(-80dBm)
+
+Creating virtual interface far-bedroom-wap-2g-ssid3 for SSID: PartlyIoT
+  ✓ Configured far-bedroom-wap-2g-ssid3: SSID="PartlyIoT", VLAN=100, 802.11r, 802.11k, 802.11v(-75dBm)
+```
+
+### Files Modified
+- `lib/wifi-config.js` - Added transition-threshold setting to steering profile creation
+
+### Related
+- Fixes issue 006 (Transition Threshold Not Applied)
+- Transition thresholds: PartlyPrimary/PartlyWork: -80 dBm, PartlyIoT: -75 dBm
+
 ## [4.3.8] - 2026-01-17 - Fix Virtual Interface Master-Interface References After Rename
 
 ### Fixed - Controller Virtual Interface master-interface References Swapped
