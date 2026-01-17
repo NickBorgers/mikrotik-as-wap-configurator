@@ -1,5 +1,22 @@
 # Changelog
 
+## [4.5.2] - 2026-01-17 - Fix Bridge MAC for DHCP Static Leases
+
+### Fixed
+- **Bridge admin-mac now set to match management interface** - DHCP static leases were failing because the bridge was using ether2's MAC instead of ether1's
+- Root cause: MikroTik's default config sets `auto-mac=no` with a manually assigned `admin-mac` that doesn't match the bond's `forced-mac-address`
+- The DHCP client runs on the bridge, so it was sending requests with the wrong MAC (ether2) instead of the bond's MAC (ether1)
+- Fix: After configuring management interfaces, explicitly set bridge `admin-mac` to match the management interface MAC
+
+### Technical Details
+- For LACP bonds: Bridge admin-mac is set to the bond's `forced-mac-address` (which is ether1's `orig-mac-address`)
+- For simple interfaces: Bridge admin-mac is set to the first management interface's `orig-mac-address`
+- This ensures DHCP requests use the same MAC as the static lease binding
+
+### Files Modified
+- `lib/infrastructure.js` - Added `setBridgeAdminMac()` function, modified `configureManagementInterfaces()` to track and set bridge MAC
+- `lib/configure.js` - Added same bridge admin-mac logic for standalone mode
+
 ## [4.5.1] - 2026-01-17 - Fix Docker Smoke Tests
 
 ### Fixed
