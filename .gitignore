@@ -4,6 +4,8 @@ node_modules/
 # Configuration files (may contain passwords)
 config.yaml
 multiple-devices.yaml
+capsman-test-devices.yaml
+*-devices.yaml
 *.local.yaml
 
 # Logs
@@ -21,3 +23,4 @@ Thumbs.db
 *.swo
 *~
 gravwell.token
+issues/
