@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.5.1] - 2026-01-17 - Fix Docker Smoke Tests
+
+### Fixed
+- **Docker entrypoint passthrough** - Allow `sh`, `bash`, `node` commands to bypass config file checks
+- Smoke tests were failing because `sh -c '...'` was falling through to the `apply` case which requires config.yaml
+- Added passthrough for debugging and smoke test commands
+
 ## [4.5.0] - 2026-01-17 - Unified CAPsMAN Config Structure
 
 ### Changed - Config Structure Consolidation

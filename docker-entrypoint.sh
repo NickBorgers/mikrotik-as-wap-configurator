@@ -92,6 +92,10 @@ case "${1:-apply}" in
         show_example_multiple
         exit 0
         ;;
+    sh|bash|node)
+        # Pass through to shell/node for debugging and smoke tests
+        exec "$@"
+        ;;
     apply-multiple)
         # Check if multi-device config file exists
         if [ ! -f /config/multiple-devices.yaml ]; then
