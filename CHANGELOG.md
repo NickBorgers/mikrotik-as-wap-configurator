@@ -1,5 +1,37 @@
 # Changelog
 
+## [4.3.3] - 2026-01-17 - Fix Missing SSIDs on CAP Devices
+
+### Fixed - CAP Virtual Interface Cleanup
+- **Bug**: CAP devices were missing SSIDs that should be broadcast according to YAML configuration
+- **Symptom**: Only some SSIDs appeared on CAP devices (e.g., only 1 of 4 SSIDs on 2.4GHz)
+- **Root cause**: `configureCapInterfacesOnController()` did not clean up existing virtual interfaces before creating new ones
+- **Impact**: Running configuration multiple times left stale virtual interfaces, causing inconsistent SSID configurations
+
+### Affected Devices
+- All wifi-qcom CAP devices using CAPsMAN Phase 2.5 configuration
+- Examples: shed-wap, outdoor-wap-east, outdoor-wap-north
+
+### Solution
+- Added cleanup step that removes existing virtual interfaces for each CAP master interface before configuration
+- Ensures idempotent operation - running multiple times produces consistent results
+- Mirrors the cleanup behavior already present in standalone configuration
+
+### Example Log Output
+```
+=== Cleaning Up Old CAP Virtual Interfaces ===
+  ✓ Removed 3 virtual interface(s) from shed-wap-2g
+  ✓ Removed 1 virtual interface(s) from shed-wap-5g
+
+=== Configuring CAP Interfaces ===
+Configuring shed-wap-2g with SSID: PartlyPrimary
+  ✓ Configured shed-wap-2g: SSID="PartlyPrimary", VLAN=100
+
+Creating virtual interface shed-wap-2g-ssid2 for SSID: PartlySonos
+  ✓ Created virtual interface shed-wap-2g-ssid2
+  ✓ Configured shed-wap-2g-ssid2: SSID="PartlySonos", VLAN=200
+```
+
 ## [4.3.2] - 2026-01-17 - Modular Code Refactoring
 
 ### Changed - Code Organization
