@@ -1,5 +1,28 @@
 # Changelog
 
+## [4.3.2] - 2026-01-17 - Modular Code Refactoring
+
+### Changed - Code Organization
+- **Refactored monolithic file** - Split 3,051-line `mikrotik-no-vlan-filtering.js` into 9 logical modules
+- **New `lib/` directory** containing:
+  - `constants.js` - Band maps, frequency/channel lookup tables
+  - `utils.js` - Path helpers, string escaping utilities
+  - `ssh-client.js` - MikroTikSSH class for device connectivity
+  - `infrastructure.js` - Bridge, DHCP, bonding, syslog configuration
+  - `wifi-config.js` - Radio detection, band settings, interface configuration
+  - `capsman.js` - CAPsMAN controller/CAP functions
+  - `backup.js` - Device backup functionality
+  - `configure.js` - Main configureMikroTik entry point
+  - `index.js` - Facade re-exporting all public APIs
+
+### Fixed
+- **diag/check-device.js** - Fixed incorrect relative path for module import
+
+### Backward Compatibility
+- **No breaking changes** - All existing imports continue to work unchanged
+- `mikrotik-no-vlan-filtering.js` now re-exports from `lib/index.js`
+- All 6 public APIs preserved: `configureMikroTik`, `configureController`, `configureCap`, `configureCapInterfacesOnController`, `backupMikroTikConfig`, `MikroTikSSH`
+
 ## [4.3.1] - 2026-01-17 - CAPsMAN Radio Detection & Interface Renaming
 
 ### Fixed - CAP Interface Band Detection and Naming
