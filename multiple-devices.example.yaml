@@ -265,10 +265,12 @@ devices:
 #       username: admin
 #       password: admin
 #     role: controller
-#     capsmanAddress: 10.252.50.1      # Static IP on CAPsMAN VLAN
+#     # Unified capsman config for controller
 #     capsman:
 #       certificate: auto              # Auto-generate certificate
 #       requirePeerCertificate: false  # Don't require CAP certificates
+#       vlan:
+#         address: 10.252.50.1         # Static IP on CAPsMAN VLAN
 #     managementInterfaces:
 #       - ether1
 #     disabledInterfaces:
@@ -289,10 +291,12 @@ devices:
 #       username: admin
 #       password: admin
 #     role: cap
-#     capsmanAddress: 10.252.50.2      # Static IP on CAPsMAN VLAN
-#     cap:
+#     # Unified capsman config for CAP
+#     capsman:
 #       controllerAddresses:
-#         - 10.252.50.1  # Controller's CAPsMAN VLAN IP
+#         - 10.252.50.1                # Controller's CAPsMAN VLAN IP
+#       vlan:
+#         address: 10.252.50.2         # Static IP on CAPsMAN VLAN
 #     managementInterfaces:
 #       - ether1
 #     disabledInterfaces:
@@ -317,10 +321,12 @@ devices:
 #       username: admin
 #       password: admin
 #     role: cap
-#     capsmanAddress: 10.252.50.3      # Static IP on CAPsMAN VLAN
-#     cap:
+#     # Unified capsman config for CAP
+#     capsman:
 #       controllerAddresses:
-#         - 10.252.50.1  # Controller's CAPsMAN VLAN IP
+#         - 10.252.50.1                # Controller's CAPsMAN VLAN IP
+#       vlan:
+#         address: 10.252.50.3         # Static IP on CAPsMAN VLAN
 #     managementInterfaces:
 #       - ether1
 #     wifi:

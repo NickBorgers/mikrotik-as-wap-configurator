@@ -232,29 +232,43 @@ async function main() {
     results.syslog = deploymentSyslog;
   }
 
-  // Extract capsmanVlan to top level if consistent across all devices
+  // Extract CAPsMAN VLAN to top level if consistent across all devices
+  // New format: capsman.vlan.id/network/address
   const capsmanVlans = results.devices
-    .map(d => d.capsmanVlan)
-    .filter(v => v && v.vlan);
+    .map(d => d.capsman?.vlan)
+    .filter(v => v && v.id);
 
   let deploymentCapsmanVlan = null;
   if (capsmanVlans.length > 0) {
     // Check if all CAPsMAN VLAN configs have the same VLAN ID and network
     const allSame = capsmanVlans.every(v =>
-      v.vlan === capsmanVlans[0].vlan &&
+      v.id === capsmanVlans[0].id &&
       v.network === capsmanVlans[0].network
     );
 
     if (allSame) {
+      // Store deployment-level VLAN config (id and network only, address is per-device)
       deploymentCapsmanVlan = {
-        vlan: capsmanVlans[0].vlan,
+        vlan: capsmanVlans[0].id,
         network: capsmanVlans[0].network
       };
 
-      // Remove capsmanVlan from individual device configs (keep capsmanAddress)
+      // Remove id and network from device configs, keep only address
       results.devices.forEach(d => {
-        if (d.capsmanVlan) {
-          delete d.capsmanVlan;
+        if (d.capsman?.vlan) {
+          const address = d.capsman.vlan.address;
+          delete d.capsman.vlan.id;
+          delete d.capsman.vlan.network;
+          // Keep address in device-level capsman.vlan
+          if (address) {
+            d.capsman.vlan = { address };
+          } else {
+            delete d.capsman.vlan;
+          }
+          // Clean up empty capsman object
+          if (d.capsman && Object.keys(d.capsman).length === 0) {
+            delete d.capsman;
+          }
         }
       });
 
@@ -262,7 +276,7 @@ async function main() {
     }
   }
 
-  // Add capsmanVlan at top level if found
+  // Add capsmanVlan at top level if found (using legacy format for backwards compatibility)
   if (deploymentCapsmanVlan) {
     results.capsmanVlan = deploymentCapsmanVlan;
   }

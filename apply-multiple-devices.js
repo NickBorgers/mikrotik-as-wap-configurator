@@ -29,9 +29,12 @@ function validateDeviceConfig(config, index, deploymentSsids) {
 
   // CAP devices get SSIDs from controller, so they don't need local SSIDs
   if (role === 'cap') {
-    // Validate CAP-specific config
-    if (!config.cap || !config.cap.controllerAddresses || config.cap.controllerAddresses.length === 0) {
-      errors.push(`Device ${index} (CAP): Missing cap.controllerAddresses`);
+    // Validate CAP-specific config - support both capsman.* (new) and cap.* (legacy)
+    const capsmanConfig = config.capsman || {};
+    const legacyCapConfig = config.cap || {};
+    const controllerAddresses = capsmanConfig.controllerAddresses || legacyCapConfig.controllerAddresses || [];
+    if (controllerAddresses.length === 0) {
+      errors.push(`Device ${index} (CAP): Missing capsman.controllerAddresses`);
     }
   } else {
     // Controller and standalone devices need SSIDs
@@ -207,6 +210,31 @@ async function main() {
       ssids = deploymentSsids;
     }
 
+    // Build unified capsman config from various sources
+    // New unified format: capsman.vlan.id/network/address
+    // Legacy formats: cap.capsmanVlan.vlan, capsmanVlan.vlan, capsmanAddress
+    const deviceCapsmanConfig = deviceConfig.capsman || {};
+    const legacyCap = deviceConfig.cap || {};
+
+    // Build vlan config: prefer new capsman.vlan format, fall back to legacy
+    let vlanConfig = null;
+    if (capsmanVlan || deviceCapsmanConfig.vlan || legacyCap.capsmanVlan) {
+      vlanConfig = {
+        // VLAN ID: new format uses 'id', legacy uses 'vlan'
+        id: deviceCapsmanConfig.vlan?.id ||
+            legacyCap.capsmanVlan?.vlan ||
+            capsmanVlan?.vlan,
+        // Network comes from deployment or device
+        network: deviceCapsmanConfig.vlan?.network ||
+                 legacyCap.capsmanVlan?.network ||
+                 capsmanVlan?.network,
+        // Address is always device-specific
+        address: deviceCapsmanConfig.vlan?.address ||
+                 legacyCap.capsmanVlan?.address ||
+                 deviceConfig.capsmanAddress
+      };
+    }
+
     return {
       host: deviceConfig.device.host,
       username: deviceConfig.device.username,
@@ -218,10 +246,12 @@ async function main() {
       syslog: deploymentSyslog,
       ssids,
       role,
-      capsman: deviceConfig.capsman,  // Controller settings
-      cap: deviceConfig.cap,          // CAP settings
-      capsmanVlan,                    // Deployment-level CAPsMAN VLAN config
-      capsmanAddress: deviceConfig.capsmanAddress  // Per-device static IP on CAPsMAN VLAN
+      // Unified capsman config
+      capsman: {
+        ...deviceCapsmanConfig,
+        ...legacyCap,  // Include legacy cap fields (controllerAddresses, etc.)
+        vlan: vlanConfig
+      }
     };
   }
 
@@ -296,7 +326,7 @@ async function main() {
           console.log(`${'='.repeat(60)}`);
           console.log(`[CAP ${i + 1}/${caps.length}] ${mtConfig.host}`);
           console.log(`${'='.repeat(60)}`);
-          console.log(`Controller: ${mtConfig.cap?.controllerAddresses?.join(', ') || 'not specified'}`);
+          console.log(`Controller: ${mtConfig.capsman?.controllerAddresses?.join(', ') || 'not specified'}`);
           console.log('');
 
           try {

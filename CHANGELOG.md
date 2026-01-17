@@ -1,5 +1,42 @@
 # Changelog
 
+## [4.5.0] - 2026-01-17 - Unified CAPsMAN Config Structure
+
+### Changed - Config Structure Consolidation
+- **Unified `capsman` block** - All CAPsMAN-related settings now consolidated under `capsman` key
+- **Old format** (still supported for backwards compatibility):
+  ```yaml
+  role: cap
+  capsmanAddress: 10.252.50.2
+  cap:
+    controllerAddresses:
+      - 10.252.50.1
+  ```
+- **New unified format**:
+  ```yaml
+  role: cap
+  capsman:
+    controllerAddresses:
+      - 10.252.50.1
+    vlan:
+      address: 10.252.50.2
+  ```
+
+### Benefits
+- **Cleaner config** - All CAPsMAN settings in one place
+- **Consistent naming** - Uses `capsman` instead of `cap` for CAPsMAN settings
+- **Better structure** - VLAN settings nested under `capsman.vlan` with `id`, `network`, `address`
+- **Backwards compatible** - Legacy formats still work
+
+### Files Modified
+- `lib/backup.js` - Output unified format (`capsman.vlan.id/network/address`)
+- `lib/infrastructure.js` - Read from both unified and legacy formats
+- `lib/capsman.js` - Support `capsman.controllerAddresses` and `cap.controllerAddresses`
+- `apply-multiple-devices.js` - Build unified config from various sources
+- `backup-multiple-devices.js` - Extract using new format
+- `multiple-devices.example.yaml` - Updated example to use unified format
+- `CLAUDE.md` - Updated documentation
+
 ## [4.4.3] - 2026-01-17 - Single-Device CAP/Controller Support
 
 ### Added - apply-config.js CAP/Controller Mode Support
