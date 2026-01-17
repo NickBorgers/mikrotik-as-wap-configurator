@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const { MikroTikSSH } = require('./mikrotik-no-vlan-filtering.js');
+const { MikroTikSSH } = require('../mikrotik-no-vlan-filtering.js');
 const yaml = require('js-yaml');
 const fs = require('fs');
 
