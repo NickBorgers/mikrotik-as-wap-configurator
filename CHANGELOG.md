@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.4.3] - 2026-01-17 - Single-Device CAP/Controller Support
+
+### Added - apply-config.js CAP/Controller Mode Support
+- **CAP role support**: `apply-config.js` now properly configures CAP devices using the `configureCap()` function
+- **Controller role support**: `apply-config.js` now properly configures CAPsMAN controllers using the `configureController()` function
+- Previously, `apply-config.js` only worked for standalone mode - CAP/controller configs would partially apply
+
+### Fixed
+- **SSID validation for CAP mode**: CAP devices no longer require SSIDs in config (they receive SSIDs from controller)
+- **Config structure handling**: Properly flattens `device.host/username/password` for CAP/controller functions
+- **Display output**: Shows "Role: CAP (SSIDs received from controller)" instead of trying to list non-existent SSIDs
+
+### Notes
+- Single-device CAP configs require: `capsmanVlan.vlan`, `capsmanVlan.network`, and `capsmanAddress` at root level
+- For multi-device deployments, use `apply-multiple-devices.js` which handles the full CAPsMAN lifecycle
+
 ## [4.4.2] - 2026-01-17 - Add Docker Image Smoke Tests
 
 ### Added - Post-Push Verification

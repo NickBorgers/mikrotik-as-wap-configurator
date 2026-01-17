@@ -3,6 +3,7 @@
 const fs = require('fs');
 const yaml = require('js-yaml');
 const { configureMikroTik } = require('./mikrotik-no-vlan-filtering.js');
+const { configureCap, configureController } = require('./lib/capsman');
 
 function loadConfig(configFile) {
   try {
@@ -26,7 +27,8 @@ function validateConfig(config) {
     if (!config.device.password) errors.push('Missing device.password');
   }
 
-  if (!config.ssids || config.ssids.length === 0) {
+  // CAP devices don't need SSIDs - they receive them from the controller
+  if (config.role !== 'cap' && (!config.ssids || config.ssids.length === 0)) {
     errors.push('No SSIDs defined');
   }
 
@@ -112,19 +114,38 @@ async function main() {
   });
 
   console.log(`Management interfaces: ${mgmtDisplay.join(', ')}`);
-  console.log(`SSIDs to configure: ${config.ssids.length}`);
-  config.ssids.forEach(ssid => {
-    console.log(`  - ${ssid.ssid}`);
-    console.log(`    Bands: ${ssid.bands.join(', ')}`);
-    console.log(`    VLAN: ${ssid.vlan}`);
-  });
+  if (config.role === 'cap') {
+    console.log(`Role: CAP (SSIDs received from controller)`);
+  } else if (config.ssids) {
+    console.log(`SSIDs to configure: ${config.ssids.length}`);
+    config.ssids.forEach(ssid => {
+      console.log(`  - ${ssid.ssid}`);
+      console.log(`    Bands: ${ssid.bands.join(', ')}`);
+      console.log(`    VLAN: ${ssid.vlan}`);
+    });
+  }
 
   console.log('\n');
   console.log('Applying configuration to device...');
   console.log('');
 
   try {
-    await configureMikroTik(mtConfig);
+    if (config.role === 'cap' || config.role === 'controller') {
+      // CAP/controller functions expect flat config with host/username/password at root
+      const flatConfig = {
+        ...config,
+        host: targetIp || config.device.host,
+        username: config.device.username,
+        password: config.device.password
+      };
+      if (config.role === 'cap') {
+        await configureCap(flatConfig);
+      } else {
+        await configureController(flatConfig);
+      }
+    } else {
+      await configureMikroTik(mtConfig);
+    }
     console.log('\n✓ Configuration applied successfully!');
   } catch (error) {
     console.error('\n✗ Configuration failed:', error.message);
