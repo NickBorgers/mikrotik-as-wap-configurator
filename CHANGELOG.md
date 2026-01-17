@@ -1,5 +1,22 @@
 # Changelog
 
+## [4.4.2] - 2026-01-17 - Add Docker Image Smoke Tests
+
+### Added - Post-Push Verification
+- **Smoke tests for Docker images** - Verify pushed images actually work
+- Runs after every Docker image push to catch packaging issues early
+- Tests include:
+  1. `help` command works
+  2. `example` command outputs valid config
+  3. All required modules can be loaded (catches missing `lib/` etc)
+  4. `apply-multiple-devices.js` syntax is valid
+
+### Prevention
+This test would have caught the missing `lib/` directory issue in v4.3.2-v4.4.0 before it reached users.
+
+### Reference
+Prompted by: https://github.com/NickBorgers/home-automation/issues/477
+
 ## [4.4.1] - 2026-01-17 - Fix Docker Build
 
 ### Fixed - Docker Image Missing lib/ Directory
