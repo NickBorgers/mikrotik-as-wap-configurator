@@ -20,7 +20,10 @@ WORKDIR /app
 COPY --from=builder /app/node_modules ./node_modules
 COPY apply-config.js ./
 COPY apply-multiple-devices.js ./
+COPY backup-config.js ./
+COPY backup-multiple-devices.js ./
 COPY mikrotik-no-vlan-filtering.js ./
+COPY lib ./lib
 COPY config.example.yaml ./
 COPY multiple-devices.example.yaml ./
 COPY diag ./diag
