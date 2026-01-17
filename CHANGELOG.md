@@ -1,5 +1,42 @@
 # Changelog
 
+## [4.3.4] - 2026-01-17 - Fix 802.11r Incorrectly Enabled on SSIDs Without Roaming
+
+### Fixed - Fast Transition (802.11r) Applied to SSIDs Without Roaming Configuration
+- **Bug**: SSIDs without `roaming.fastTransition` were still getting 802.11r enabled
+- **Symptom**: PartlySonos SSID (no roaming configured) had `.ft=yes` on most devices
+- **Root cause**: `configureWifiInterface()` in `lib/wifi-config.js` only added `.ft=yes` when enabled, but didn't explicitly set `.ft=no` when disabled
+- **Impact**: Stationary devices like Sonos could experience unnecessary roaming behavior
+
+### Affected Devices
+- All wifi-qcom CAPsMAN CAP devices
+- Example SSIDs: PartlySonos (should have NO roaming, was getting 802.11r)
+
+### Solution
+- Explicitly set `security.ft=no security.ft-over-ds=no` when SSID does not have `roaming.fastTransition: true`
+- Ensures any previous FT settings are cleared
+- Matches behavior of standalone configuration in `lib/configure.js`
+
+### Example
+YAML configuration:
+```yaml
+- ssid: PartlySonos
+  passphrase: password
+  vlan: 100
+  bands: [2.4GHz]
+  # No roaming - Sonos devices are stationary
+```
+
+Before fix:
+```
+security.authentication-types=wpa2-psk .passphrase="password" .ft=yes
+```
+
+After fix:
+```
+security.authentication-types=wpa2-psk .passphrase="password" .ft=no
+```
+
 ## [4.3.3] - 2026-01-17 - Fix Missing SSIDs on CAP Devices
 
 ### Fixed - CAP Virtual Interface Cleanup
