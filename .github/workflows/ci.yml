@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Build and Test Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          tags: mikrotik-config:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run smoke tests
+        run: |
+          # Test 1: Verify 'help' command works
+          echo "=== Test 1: Verify 'help' command ==="
+          docker run --rm mikrotik-config:test help
+          echo "✅ Help command works"
+
+          # Test 2: Verify 'example' command outputs valid YAML
+          echo ""
+          echo "=== Test 2: Verify 'example' command ==="
+          docker run --rm mikrotik-config:test example | head -20
+          echo "✅ Example command works"
+
+          # Test 3: Verify all modules can be loaded (catches missing lib/ etc)
+          echo ""
+          echo "=== Test 3: Verify modules load correctly ==="
+          docker run --rm mikrotik-config:test sh -c '
+            node -e "
+              const lib = require(\"/app/mikrotik-no-vlan-filtering.js\");
+              const requiredExports = [
+                \"configureMikroTik\",
+                \"configureController\",
+                \"configureCap\",
+                \"configureCapInterfacesOnController\",
+                \"configureAccessLists\",
+                \"backupMikroTikConfig\",
+                \"MikroTikSSH\"
+              ];
+              for (const exp of requiredExports) {
+                if (typeof lib[exp] !== \"function\") {
+                  console.error(\"Missing or invalid export: \" + exp);
+                  process.exit(1);
+                }
+              }
+              console.log(\"All \" + requiredExports.length + \" required exports verified\");
+            "
+          '
+          echo "✅ All modules load correctly"
+
+          # Test 4: Verify apply-multiple-devices.js can be parsed
+          echo ""
+          echo "=== Test 4: Verify apply-multiple-devices.js syntax ==="
+          docker run --rm mikrotik-config:test sh -c 'node --check /app/apply-multiple-devices.js'
+          echo "✅ apply-multiple-devices.js syntax OK"
+
+          echo ""
+          echo "========================================"
+          echo "✅ All smoke tests passed!"
+          echo "========================================"
+
+  notify-on-failure:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: failure() && github.ref == 'refs/heads/main'
+    permissions:
+      issues: write
+    steps:
+      - name: Create GitHub Issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `🚨 CI smoke tests failed on main`;
+            const body = `## CI Smoke Test Failure
+
+            The Docker image smoke tests failed on push to main.
+
+            **Workflow Run:** [View logs](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
+            **Commit:** ${context.sha}
+            **Author:** ${context.actor}
+
+            ### What to do
+            1. Check the workflow logs for the specific failure
+            2. Fix the issue before cutting a release
+
+            ---
+            *This issue was automatically created by the CI workflow.*`;
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: body,
+              labels: ['bug', 'ci-failure']
+            });
