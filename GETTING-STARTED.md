@@ -207,19 +207,28 @@ If you don't know the device IP:
 
 ### Multiple SSIDs on Same Band
 
-Current limitation: If you configure multiple SSIDs with the same band, only the last one will be applied to that interface.
+Multiple SSIDs on the same band are fully supported using virtual WiFi interfaces. The script automatically creates virtual interfaces (e.g., `wifi1-ssid2`, `wifi1-ssid3`) for additional SSIDs.
 
-**Example (won't work as expected):**
+**Example (works correctly):**
 ```yaml
 ssids:
-  - ssid: Network1
-    bands: [2.4GHz]  # This will be overwritten
+  - ssid: MainNetwork
+    passphrase: main-pass
+    vlan: 100
+    bands: [2.4GHz, 5GHz]
 
-  - ssid: Network2
-    bands: [2.4GHz]  # This will be on wifi1
+  - ssid: GuestNetwork
+    passphrase: guest-pass
+    vlan: 200
+    bands: [2.4GHz, 5GHz]  # Creates virtual interfaces
+
+  - ssid: IoT-Devices
+    passphrase: iot-pass
+    vlan: 300
+    bands: [2.4GHz]  # 2.4GHz only for IoT
 ```
 
-**Workaround**: Use different bands or accept that only one SSID per band is supported.
+All three SSIDs will broadcast on 2.4GHz using `wifi1`, `wifi1-ssid2`, and `wifi1-ssid3`.
 
 ## Best Practices
 

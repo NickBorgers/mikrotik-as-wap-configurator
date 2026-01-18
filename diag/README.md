@@ -60,6 +60,27 @@ Waits for device to come online after reboot.
 node diag/wait-for-device.js <password>
 ```
 
+### check-wifi-status.js
+Checks WiFi interface status and configuration.
+
+```bash
+node diag/check-wifi-status.js <host> <username> <password>
+```
+
+### validate-vlan-config.js
+Validates VLAN configuration on a device.
+
+```bash
+node diag/validate-vlan-config.js <host> <username> <password>
+```
+
+### raw-wifi-check.js
+Low-level WiFi interface debugging.
+
+```bash
+node diag/raw-wifi-check.js <host> <username> <password>
+```
+
 ### optimize-wifi-channels.js
 Analyzes multiple MikroTik devices and suggests optimal WiFi channel configurations to minimize interference between physically close access points.
 

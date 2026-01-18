@@ -154,6 +154,39 @@ ssids:
 
 The script is **idempotent** and safe to run multiple times.
 
+## Features
+
+### Core Features
+- **YAML-based configuration** - Human-readable, version-controllable device configs
+- **Idempotent operations** - Safe to run multiple times; device state matches config
+- **Multi-SSID support** - Multiple SSIDs per band using virtual WiFi interfaces
+- **VLAN tagging** - WiFi client isolation via datapaths (no bridge VLAN filtering)
+- **Backup & restore** - Export running config to YAML, apply to new devices
+
+### Advanced WiFi
+- **Channel optimization** - Automatic non-overlapping channel suggestions for multi-AP
+- **TX power control** - Per-band transmit power configuration
+- **Channel width** - 20MHz, 40MHz, 80MHz, 160MHz support
+
+### Fast Roaming (802.11r/k/v)
+- **802.11r** - Fast BSS Transition for seamless handoffs between APs
+- **802.11k** - Neighbor reports (APs tell clients about nearby APs)
+- **802.11v** - BSS Transition Management (client steering)
+- **Per-SSID control** - Enable roaming for mobile devices, disable for IoT/Sonos
+
+### CAPsMAN Centralized Management
+- **Controller mode** - Centralized WiFi management with coordinated roaming
+- **CAP mode** - Controlled Access Points receiving config from controller
+- **Dedicated VLAN** - Optional L2 VLAN for CAP↔Controller traffic
+- **Local WiFi fallback** - CAPs continue working if controller goes offline
+- See `multiple-devices.example.yaml` for CAPsMAN configuration examples
+
+### Enterprise Features
+- **LACP bonding** - Redundant management uplinks (802.3ad)
+- **WAP locking** - Lock specific clients to specific APs via access-list rules
+- **Remote syslog** - Centralized logging of WiFi events
+- **Automatic identity** - Device identity extracted from FQDN hostname
+
 ## Multi-Device Management
 
 Configure multiple devices at once using a single YAML file.
@@ -290,7 +323,9 @@ In RouterOS v7, WiFi is configured directly on interfaces using inline propertie
 | `backup-config.js` | Export current device configuration to YAML |
 | `backup-multiple-devices.js` | Export multiple device configurations to YAML |
 | `configure-device.sh` | Automated configuration with password update |
-| `wait-for-device.js` | Wait for device to be ready |
+| `diag/wait-for-device.js` | Wait for device to be ready |
+| `diag/check-status.js` | View WiFi interfaces, datapaths, and bridge configuration |
+| `diag/optimize-wifi-channels.js` | Analyze and suggest optimal WiFi channels |
 
 ## Usage Examples
 
@@ -426,19 +461,37 @@ This configuration uses **VLAN filtering disabled** for safety. To enable full V
 
 ```
 network-config-as-code/
-├── apply-config.js              # Single device configuration
-├── apply-multiple-devices.js    # Multi-device configuration
-├── backup-config.js             # Single device backup
-├── backup-multiple-devices.js   # Multi-device backup
-├── mikrotik-no-vlan-filtering.js # Core configuration library
-├── config.yaml                  # Single device configuration (gitignored)
+├── apply-config.js              # Single device configuration CLI
+├── apply-multiple-devices.js    # Multi-device configuration CLI
+├── backup-config.js             # Single device backup CLI
+├── backup-multiple-devices.js   # Multi-device backup CLI
+├── mikrotik-no-vlan-filtering.js # Facade re-exporting lib/ modules
+├── lib/                         # Core library modules
+│   ├── index.js                 # Public API exports
+│   ├── configure.js             # Main configureMikroTik entry point
+│   ├── capsman.js               # CAPsMAN controller/CAP functions
+│   ├── backup.js                # Device backup functionality
+│   ├── access-list.js           # WAP locking via access-list rules
+│   ├── infrastructure.js        # Bridge, DHCP, bonding, syslog
+│   ├── wifi-config.js           # Radio detection, interface config
+│   ├── ssh-client.js            # MikroTikSSH class
+│   ├── constants.js             # Band maps, frequency tables
+│   └── utils.js                 # Path helpers, string escaping
+├── diag/                        # Diagnostic tools
+│   ├── check-status.js          # View WiFi/datapath/bridge config
+│   ├── check-running.js         # Monitor runtime status and clients
+│   ├── optimize-wifi-channels.js # Channel optimization for multi-AP
+│   └── wait-for-device.js       # Wait for device after reboot
+├── config.yaml                  # Single device config (gitignored)
 ├── config.example.yaml          # Example single device config
-├── multiple-devices.yaml        # Multi-device configuration (gitignored)
+├── multiple-devices.yaml        # Multi-device config (gitignored)
 ├── multiple-devices.example.yaml # Example multi-device config
 ├── configure-device.sh          # Automated setup script
-├── wait-for-device.js           # Device availability checker
+├── docker-entrypoint.sh         # Docker container entrypoint
+├── Dockerfile                   # Multi-stage Docker build
 ├── README.md                    # This file
 ├── GETTING-STARTED.md           # First-time setup guide
+├── DOCKER.md                    # Docker usage guide
 ├── CHANGELOG.md                 # Version history
 └── LICENSE                      # MIT License
 ```
