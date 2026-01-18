@@ -94,6 +94,7 @@ async function main() {
     identity: config.identity,  // Optional explicit identity override
     managementInterfaces: config.managementInterfaces || ['ether1'],
     disabledInterfaces: config.disabledInterfaces || [],
+    igmpSnooping: config.igmpSnooping,  // IGMP snooping on bridge
     wifi: config.wifi,  // WiFi optimization settings (channel, power, roaming)
     securityProfile: config.security?.profile || 'wpa2-vlan100',
     passphrase: config.security?.passphrase || 'password',

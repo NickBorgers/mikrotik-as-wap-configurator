@@ -242,6 +242,7 @@ async function main() {
       identity: deviceConfig.identity,
       managementInterfaces: deviceConfig.managementInterfaces || ['ether1'],
       disabledInterfaces: deviceConfig.disabledInterfaces || [],
+      igmpSnooping: deviceConfig.igmpSnooping,
       wifi,
       syslog: deploymentSyslog,
       ssids,
