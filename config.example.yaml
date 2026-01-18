@@ -27,6 +27,12 @@ managementInterfaces:
 disabledInterfaces:
   - ether2
 
+# IGMP Snooping (Optional)
+# Enable IGMP snooping on the bridge to optimize multicast traffic (e.g., Sonos, Chromecast)
+# When enabled, multicast traffic is only forwarded to ports with interested receivers
+# Default: false (disabled) - MikroTik default behavior
+# igmpSnooping: true
+
 # WiFi Optimization Settings (Optional)
 # Configure channel, power, and roaming settings for optimal performance
 # Especially useful when multiple APs are deployed in close proximity

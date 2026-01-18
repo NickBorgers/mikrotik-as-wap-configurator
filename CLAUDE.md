@@ -64,6 +64,16 @@
 - Ensures device state matches config.yaml exactly
 - Idempotent: can run multiple times safely
 
+**IGMP Snooping (Added v4.7.0)**
+- Optional per-device boolean setting to enable IGMP snooping on the bridge
+- IGMP snooping optimizes multicast traffic (Sonos, Chromecast, etc.)
+- When enabled, multicast is only forwarded to ports with interested receivers
+- Reduces unnecessary network load from multicast flooding
+- Default: false (disabled) - matches MikroTik's default behavior
+- Configuration: `igmpSnooping: true` at device level
+- Applied during bridge infrastructure setup
+- Backed up from device and stored only when enabled (omitted when false)
+
 **Band-to-Interface Mapping**
 ```javascript
 const BAND_TO_INTERFACE = {

@@ -125,6 +125,8 @@ devices:
       - ether1
       - ether2  # This AP uses both ports
     disabledInterfaces: []  # No disabled interfaces
+    # IGMP snooping - optimize multicast traffic (Sonos, Chromecast, etc.)
+    igmpSnooping: true
     # WiFi optimization for third AP - completes non-overlapping set
     wifi:
       2.4GHz:
