@@ -28,6 +28,7 @@ module.exports = {
   configureController: lib.configureController,
   configureCap: lib.configureCap,
   configureCapInterfacesOnController: lib.configureCapInterfacesOnController,
+  configureLocalCapFallback: lib.configureLocalCapFallback,
   configureAccessLists: lib.configureAccessLists,
   backupAccessLists: lib.backupAccessLists,
   extractHostname: lib.extractHostname,

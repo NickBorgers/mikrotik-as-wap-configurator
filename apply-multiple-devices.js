@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const yaml = require('js-yaml');
-const { configureMikroTik, configureCapInterfacesOnController, configureAccessLists, extractHostname } = require('./mikrotik-no-vlan-filtering.js');
+const { configureMikroTik, configureCapInterfacesOnController, configureLocalCapFallback, configureAccessLists, extractHostname } = require('./mikrotik-no-vlan-filtering.js');
 
 function loadConfig(configFile) {
   try {
@@ -389,6 +389,31 @@ async function main() {
         console.error(`⚠️  Access-list configuration warning: ${error.message}`);
         console.error('    Locked devices may not be properly configured.');
       }
+    }
+
+    // Phase 2.6: Configure local WiFi fallback on CAP devices
+    // This allows CAPs to continue providing WiFi even when controller is unreachable
+    if (caps.length > 0 && deploymentSsids.length > 0) {
+      console.log(`\n=== Phase 2.6: Configuring Local WiFi Fallback on CAP Devices ===\n`);
+
+      for (const cap of caps) {
+        const capConfig = {
+          host: cap.device.host,
+          username: cap.device.username,
+          password: cap.device.password,
+          identity: cap.identity,
+          wifi: cap.wifi
+        };
+
+        try {
+          await configureLocalCapFallback(capConfig, deploymentSsids, deploymentCountry || 'United States');
+        } catch (error) {
+          // Non-fatal - CAP still works with controller, just no fallback
+          console.error(`⚠️  Local fallback warning for ${cap.device.host}: ${error.message}`);
+        }
+      }
+
+      console.log('\n✓ Local WiFi fallback configuration complete');
     }
 
     // Phase 3: Configure standalone devices (if any mixed in)
