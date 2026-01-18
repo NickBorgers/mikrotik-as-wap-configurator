@@ -1,5 +1,48 @@
 # Changelog
 
+## [4.6.0] - 2026-01-18 - Local WiFi Fallback for CAP Devices
+
+### Added - Local WiFi Fallback (Phase 2.6)
+- **CAP devices now have local WiFi configuration** - When a CAP loses connection to the CAPsMAN controller, WiFi continues working
+- **Problem solved**: Previously, if the controller went down, all CAP WiFi stopped broadcasting
+- **Solution**: Phase 2.6 applies the same WiFi configuration locally on each CAP device
+- Since CAPs use `capsman-or-local` manager mode, they automatically fall back to local config when the controller is unavailable
+
+### How It Works
+- **Phase 2.6** added to `apply-multiple-devices.js` after Phase 2.75 (access-lists)
+- For each CAP device:
+  1. Connects via SSH
+  2. Detects WiFi package and radio layout (including swapped radios on cAP ax)
+  3. Cleans up old local datapaths and virtual interfaces (idempotent)
+  4. Configures each SSID on appropriate interfaces (wifi1/wifi2)
+  5. Applies per-CAP band settings (txPower, channel)
+
+### Configuration
+No YAML changes required - local fallback is automatic when using CAPsMAN mode with deployment-level SSIDs.
+
+### Verification
+After applying configuration:
+```bash
+# Check local WiFi config on a CAP
+/interface/wifi print detail
+# Should show configuration.ssid, security.*, datapath.* on all interfaces
+# Manager mode should be capsman-or-local
+```
+
+Test fallback by disconnecting the controller - CAP WiFi should continue broadcasting.
+
+### Files Added/Modified
+- `lib/capsman.js` - Added `configureLocalCapFallback()` function
+- `lib/index.js` - Export new function
+- `mikrotik-no-vlan-filtering.js` - Re-export new function
+- `apply-multiple-devices.js` - Added Phase 2.6 orchestration
+
+### Benefits
+- **High availability** - WiFi continues working during controller outages
+- **Graceful degradation** - Clients stay connected even if management fails
+- **No config changes needed** - Works automatically with existing CAPsMAN deployments
+- **Non-fatal errors** - If one CAP fails local config, others continue
+
 ## [4.5.3] - 2026-01-18 - Fix WAP Locking Rule Cleanup
 
 ### Fixed
