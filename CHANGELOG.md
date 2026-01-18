@@ -1,5 +1,42 @@
 # Changelog
 
+## [4.7.0] - 2026-01-18 - Graceful Access-List Updates
+
+### Added - Diff-Based Access-List Updates
+- **Non-disruptive WAP locking rule updates** - Devices already on correct AP are no longer disconnected
+- Fixes [Issue #4](https://github.com/NickBorgers/mikrotik-as-wap-configurator/issues/4)
+
+### How It Works
+1. **Fetch current rules** - Read existing access-list rules from controller
+2. **Compute desired state** - Build target rules from config
+3. **Diff comparison** - Identify rules to add vs remove
+4. **Add-first strategy** - Create new ACCEPT rules before any deletions
+5. **Remove stale rules** - Only delete rules that are no longer needed
+6. **Orphaned rule handling** - Detect and replace rules with `interface=*xxx` (internal IDs)
+
+### Benefits
+- **No unnecessary disconnections** - If a rule already matches, it's left untouched
+- **Idempotent** - Running apply multiple times produces same result without churn
+- **Graceful interface rebuilds** - When Phase 2.5 recreates WiFi interfaces, orphaned rules are detected and replaced
+- **Add-before-remove** - Devices get new ACCEPT rules before any are removed
+
+### Technical Details
+- New helper functions: `getCurrentLockingRules()`, `buildDesiredRules()`, `diffRules()`
+- Rule comparison uses key: `MAC|interface|action`
+- Orphaned rules (interface field = `*xxx`) are filtered out and removed
+- Phases: Phase 1 (ACCEPT adds) → Phase 2 (REJECT adds) → Phase 3a (orphaned removal) → Phase 3b (stale removal)
+
+### Output Example
+```
+=== Computing Access-List Changes (diff-based) ===
+  Rules unchanged: 120
+  Rules to add: 0
+  Rules to remove: 0
+
+✓ All rules already match desired state - no changes needed
+  (No devices will be disconnected)
+```
+
 ## [4.6.0] - 2026-01-18 - Local WiFi Fallback for CAP Devices
 
 ### Added - Local WiFi Fallback (Phase 2.6)
