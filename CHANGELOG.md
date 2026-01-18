@@ -1,5 +1,23 @@
 # Changelog
 
+## [4.5.3] - 2026-01-18 - Fix WAP Locking Rule Cleanup
+
+### Fixed
+- **WAP locking rules now properly cleaned up when devices are removed from config**
+- Previously, cleanup only removed rules for MACs currently in the config
+- If a device was removed from `lockedDevices`, its access-list rules remained orphaned on the controller
+- Fix: Now removes ALL rules matching "lock to" or "locked to" comment patterns before applying new rules
+- This ensures removed devices have their rules cleaned up and the controller state matches config
+
+### Technical Details
+- Changed cleanup from per-MAC iteration to pattern-based removal
+- Uses MikroTik's `find` with `comment~"lock to" or comment~"locked to"` to match all locking rules
+- Cleanup runs even when `lockedDevices` is empty (cleanup-only mode)
+- The comment patterns are stable and won't match user-created rules
+
+### Files Modified
+- `lib/access-list.js` - Rewrote cleanup logic to remove all locking rules before applying config
+
 ## [4.5.2] - 2026-01-17 - Fix Bridge MAC for DHCP Static Leases
 
 ### Fixed
