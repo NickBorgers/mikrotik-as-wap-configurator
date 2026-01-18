@@ -126,7 +126,7 @@ The container must be able to reach your MikroTik device's IP address via SSH (p
 **Recommended for production:**
 ```bash
 docker run -v $(pwd)/config.yaml:/config/config.yaml \
-  ghcr.io/nickborgers/mikrotik-as-wap-configurator:2.0.0
+  ghcr.io/nickborgers/mikrotik-as-wap-configurator:4.6.0
 ```
 
 ## Multi-Architecture Support
@@ -261,9 +261,47 @@ configure-mikrotik:
         ghcr.io/nickborgers/mikrotik-as-wap-configurator
 ```
 
+## Multi-Device Configuration
+
+The Docker image supports multi-device configuration for managing multiple MikroTik devices from a single YAML file.
+
+### Get Example Multi-Device Config
+
+```bash
+docker run ghcr.io/nickborgers/mikrotik-as-wap-configurator example-multiple > multiple-devices.yaml
+```
+
+### Apply to Multiple Devices
+
+```bash
+# Sequential with 5-second delay between devices (recommended)
+docker run -v $(pwd)/multiple-devices.yaml:/config/multiple-devices.yaml \
+  ghcr.io/nickborgers/mikrotik-as-wap-configurator apply-multiple
+
+# Parallel (faster, but brief network-wide WiFi outage)
+docker run -v $(pwd)/multiple-devices.yaml:/config/multiple-devices.yaml \
+  ghcr.io/nickborgers/mikrotik-as-wap-configurator apply-multiple --parallel
+
+# Custom delay between devices
+docker run -v $(pwd)/multiple-devices.yaml:/config/multiple-devices.yaml \
+  ghcr.io/nickborgers/mikrotik-as-wap-configurator apply-multiple --delay 10
+```
+
+### CAPsMAN Deployments
+
+For CAPsMAN (centralized WiFi management) deployments, the `apply-multiple` command automatically:
+1. Deploys the controller first
+2. Waits for CAPsMAN service to initialize
+3. Deploys CAP devices
+4. Configures CAP interfaces on the controller
+
+See `multiple-devices.example.yaml` for CAPsMAN configuration examples.
+
+> **Note:** Backup commands (`backup-config.js`, `backup-multiple-devices.js`) are not currently exposed via Docker. Use the Node.js installation for backup operations.
+
 ## Advanced Usage
 
-### Configure Multiple Devices
+### Configure Multiple Devices (Loop)
 
 ```bash
 for ip in 192.168.1.{10..20}; do

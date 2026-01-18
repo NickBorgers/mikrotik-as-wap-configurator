@@ -97,10 +97,54 @@ ssids:
 - Check DHCP leases on your router
 - Or use the IP you configured
 
+## Multi-Device Operations
+
+```bash
+# Backup all devices (updates file in-place)
+./backup-multiple-devices.js multiple-devices.yaml
+
+# Apply to all devices (sequential, 5s delay)
+./apply-multiple-devices.js multiple-devices.yaml
+
+# Apply in parallel (faster)
+./apply-multiple-devices.js multiple-devices.yaml --parallel
+```
+
+## Fast Roaming (802.11r/k/v)
+
+```yaml
+ssids:
+  - ssid: MyNetwork
+    passphrase: password
+    vlan: 100
+    bands: [2.4GHz, 5GHz]
+    roaming:
+      fastTransition: true  # 802.11r
+      rrm: true             # 802.11k (CAPsMAN only)
+      wnm: true             # 802.11v (CAPsMAN only)
+
+  - ssid: IoT-Devices
+    passphrase: iot-pass
+    vlan: 100
+    bands: [2.4GHz]
+    # No roaming = disabled (for stationary devices)
+```
+
+## CAPsMAN Quick Start
+
+For centralized WiFi management with coordinated roaming:
+
+1. Set `role: controller` on one device
+2. Set `role: cap` on other devices
+3. Configure `capsman.controllerAddresses` on CAPs
+4. See `multiple-devices.example.yaml` for full example
+
 ## Files
 
 - `config.yaml` - Your device configuration
 - `config.example.yaml` - Template to copy
+- `multiple-devices.yaml` - Multi-device configuration
+- `multiple-devices.example.yaml` - Multi-device template with CAPsMAN example
 - `GETTING-STARTED.md` - Detailed setup guide
 - `README.md` - Full documentation
 
