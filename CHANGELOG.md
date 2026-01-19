@@ -1,5 +1,27 @@
 # Changelog
 
+## [4.8.0] - 2026-01-19 - IGMP Snooping Support
+
+### Added - IGMP Snooping
+- **Optional per-device IGMP snooping** - Enable multicast optimization on the bridge
+- **Use case**: Optimizes multicast traffic for Sonos, Chromecast, and similar devices
+- **Behavior**: When enabled, multicast is only forwarded to ports with interested receivers
+- **Default**: `false` (disabled) - matches MikroTik's default behavior
+- **Configuration**: `igmpSnooping: true` at device level in YAML
+- **Backup support**: IGMP snooping state is backed up from devices (stored only when enabled)
+
+### Configuration Example
+```yaml
+# Single device (config.yaml)
+igmpSnooping: true
+
+# Multi-device (multiple-devices.yaml)
+devices:
+  - device:
+      host: wap.example.com
+    igmpSnooping: true
+```
+
 ## [4.7.0] - 2026-01-18 - Graceful Access-List Updates
 
 ### Added - Diff-Based Access-List Updates
