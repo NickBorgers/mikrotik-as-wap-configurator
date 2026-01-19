@@ -3,7 +3,7 @@
   "dockerComposeFile": "docker-compose.yml",
   "service": "app",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
-  
+
   // Configure tool-specific properties
   "customizations": {
     "vscode": {
@@ -29,5 +29,8 @@
       "moby": true,
       "dockerDashComposeVersion": "v2"
     }
-  }
+  },
+
+  // Install additional packages
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y iputils-ping"
 }
