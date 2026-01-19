@@ -162,6 +162,28 @@ const BAND_TO_INTERFACE = {
       disabled=no
   ```
 
+**wifi-qcom Virtual SSID Traffic Fix (Added v4.9.0)**
+- Problem: Clients on virtual SSIDs (PartlySonos, PartlyIoT, etc.) could associate but had no network connectivity
+- Root cause: wifi-qcom CAPsMAN "traffic processing on CAP" mode has two requirements not documented by MikroTik:
+  1. `slaves-static=yes` must be enabled in CAP settings
+  2. Virtual WiFi interfaces must be added as bridge ports with correct PVID
+- Without `slaves-static=yes`, local virtual interfaces remain "Inactive" and data traffic doesn't flow
+- Without bridge ports, even with `datapath.bridge=bridge`, traffic isn't properly bridged
+- Solution implemented:
+  1. `configureCap()` now sets `slaves-static=yes` automatically
+  2. `configureLocalCapFallback()` now adds virtual interfaces as bridge ports with PVID matching VLAN
+  3. `configureLocalCapFallback()` restarts CAP mode after configuring interfaces to force CAPsMAN rebind
+- CAP mode restart is necessary because CAPsMAN must rebind to newly created local interfaces
+- Verification commands:
+  ```
+  /interface/wifi print                                    # Virtual interfaces should show "BR" (Bound, Running)
+  /interface print stats where name~"ssid"                 # Should show non-zero RX/TX bytes
+  /interface/bridge/host print where on-interface~"ssid"   # Should show client MACs
+  ```
+- References:
+  - https://forum.mikrotik.com/t/wifi-capsman-wifi-qcom-ac-caps-and-slave-interfaces-in-vlan-environnent/181308
+  - https://www.jaburjak.cz/posts/mikrotik-wifi-qcom-ac-vlans/
+
 **CAPsMAN Radio Detection & Interface Renaming (Added v4.3.1)**
 - MikroTik names CAP interfaces based on physical interface number, NOT actual radio band
 - Problem: Many devices have swapped radios (wifi1=5GHz, wifi2=2.4GHz), including:
