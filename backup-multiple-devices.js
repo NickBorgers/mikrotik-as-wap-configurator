@@ -281,6 +281,73 @@ async function main() {
     results.capsmanVlan = deploymentCapsmanVlan;
   }
 
+  // For CAPsMAN deployments: promote SSIDs to deployment level and convert device SSIDs to references
+  // This enables per-WAP SSID customization where each device can specify which SSIDs it broadcasts
+  const hasController = results.devices.some(d => d.role === 'controller');
+  const hasCaps = results.devices.some(d => d.role === 'cap');
+  const isCapsmanDeployment = hasController && hasCaps;
+
+  if (isCapsmanDeployment) {
+    console.log('\n=== Promoting SSIDs for CAPsMAN Deployment ===');
+
+    // Collect all unique SSIDs from all devices
+    // Key: SSID name, Value: full SSID config (passphrase, vlan, roaming)
+    const ssidTemplates = new Map();
+
+    for (const device of results.devices) {
+      if (!device.ssids || device.ssids.length === 0) continue;
+
+      for (const ssid of device.ssids) {
+        if (!ssidTemplates.has(ssid.ssid)) {
+          // Store the first occurrence as the template
+          ssidTemplates.set(ssid.ssid, {
+            ssid: ssid.ssid,
+            passphrase: ssid.passphrase,
+            vlan: ssid.vlan,
+            roaming: ssid.roaming
+          });
+        }
+      }
+    }
+
+    if (ssidTemplates.size > 0) {
+      // Create deployment-level ssids array (without bands - each device specifies its own)
+      results.ssids = Array.from(ssidTemplates.values()).map(template => {
+        const deploymentSsid = {
+          ssid: template.ssid,
+          passphrase: template.passphrase,
+          vlan: template.vlan
+        };
+        if (template.roaming) {
+          deploymentSsid.roaming = template.roaming;
+        }
+        return deploymentSsid;
+      });
+
+      console.log(`✓ Created ${results.ssids.length} deployment-level SSID(s):`);
+      for (const ssid of results.ssids) {
+        console.log(`    - ${ssid.ssid} (VLAN ${ssid.vlan})`);
+      }
+
+      // Convert each device's ssids to reference format (just ssid + bands)
+      for (const device of results.devices) {
+        if (!device.ssids || device.ssids.length === 0) continue;
+
+        const deviceSsidRefs = device.ssids.map(ssid => {
+          const ref = {
+            ssid: ssid.ssid,
+            bands: ssid.bands
+          };
+          return ref;
+        });
+
+        device.ssids = deviceSsidRefs;
+      }
+
+      console.log(`✓ Converted device SSIDs to reference format`);
+    }
+  }
+
   // Distribute locked devices from controller to their target device configs
   // Access-list rules are stored on the controller but belong to the device they lock clients to
   for (const device of results.devices) {

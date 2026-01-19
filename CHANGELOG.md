@@ -1,5 +1,74 @@
 # Changelog
 
+## [5.1.0] - 2026-01-19 - Per-WAP SSID Customization
+
+### Added - Per-WAP SSID Customization for CAPsMAN Deployments
+
+Enable each access point to broadcast different SSIDs on different bands. This is possible because wifi-qcom CAPsMAN configures CAP interfaces directly on the controller.
+
+### Schema Design
+
+**Deployment-level SSIDs** define PSKs, VLANs, and roaming settings once:
+```yaml
+ssids:
+  - ssid: PartlyPrimary
+    passphrase: secret-password
+    vlan: 100
+    roaming:
+      fastTransition: true
+  - ssid: PartlyIoT
+    passphrase: iot-password
+    vlan: 200
+```
+
+**Per-device SSIDs** specify which SSIDs to broadcast and on which bands:
+```yaml
+devices:
+  - device: { host: indoor-wap.example.com, ... }
+    role: cap
+    ssids:
+      - ssid: PartlyPrimary
+        bands: [2.4GHz, 5GHz]    # All bands
+      - ssid: PartlyIoT
+        bands: [2.4GHz]          # 2.4GHz only
+
+  - device: { host: outdoor-wap.example.com, ... }
+    role: cap
+    ssids:
+      - ssid: PartlyPrimary
+        bands: [2.4GHz]          # 2.4GHz only for range
+      # No PartlyIoT on this AP
+```
+
+### Key Features
+
+- **Fully declarative**: PSKs defined once at deployment level, devices list SSIDs by name
+- **Band control**: Each device specifies which bands for each SSID
+- **SSID selection**: Devices can omit SSIDs to not broadcast them
+- **Backwards compatible**: Legacy full-SSID format still works
+
+### Implementation
+
+- **`resolveSsidsForDevice()`**: Merges device SSID references with deployment templates
+- **Phase 2.5**: Passes per-CAP resolved SSIDs to controller interface configuration
+- **Phase 2.6**: Uses per-CAP resolved SSIDs for local fallback configuration
+- **Backup**: Automatically promotes SSIDs to deployment level in CAPsMAN deployments
+
+### Use Cases
+
+1. **Indoor vs Outdoor**: Indoor APs broadcast all SSIDs; outdoor only primary network
+2. **Guest isolation**: Only lobby APs broadcast guest network
+3. **IoT placement**: Only APs near IoT devices broadcast IoT SSID
+4. **Band selection**: High-throughput areas use 5GHz; coverage-focused use 2.4GHz
+
+### Files Modified
+
+- `apply-multiple-devices.js` - Added `resolveSsidsForDevice()`, updated validation, Phase 2.5/2.6
+- `lib/capsman.js` - Updated `configureCapInterfacesOnController()` to use per-CAP SSIDs
+- `backup-multiple-devices.js` - Promotes SSIDs to deployment level for CAPsMAN
+- `multiple-devices.example.yaml` - Updated with per-device SSID examples
+- `package.json` - Version bump to 5.1.0
+
 ## [5.0.0] - 2026-01-19 - Remove wifiwave2 Support (BREAKING CHANGE)
 
 ### Breaking Change: wifiwave2 WiFi Package No Longer Supported

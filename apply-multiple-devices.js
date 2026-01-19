@@ -15,6 +15,45 @@ function loadConfig(configFile) {
   }
 }
 
+/**
+ * Resolve SSIDs for a device by merging device-level SSID references with deployment-level SSID templates.
+ *
+ * Device SSIDs specify which SSIDs to broadcast and on which bands.
+ * Deployment SSIDs provide the PSK, VLAN, and roaming settings.
+ *
+ * @param {Array<Object>} deviceSsids - Device-level SSID references with ssid name and bands
+ * @param {Array<Object>} deploymentSsids - Deployment-level SSID templates with PSK, VLAN, roaming
+ * @returns {Array<Object>} - Fully resolved SSIDs with all settings
+ */
+function resolveSsidsForDevice(deviceSsids, deploymentSsids) {
+  if (!deviceSsids || deviceSsids.length === 0) {
+    return [];  // No SSIDs listed = no SSIDs broadcast
+  }
+
+  // Build lookup by SSID name for PSK/VLAN/roaming
+  const templates = new Map(deploymentSsids.map(s => [s.ssid, s]));
+  const resolved = [];
+
+  for (const deviceSsid of deviceSsids) {
+    const template = templates.get(deviceSsid.ssid);
+    if (!template) {
+      throw new Error(`SSID "${deviceSsid.ssid}" not found in deployment-level ssids`);
+    }
+    if (!deviceSsid.bands || deviceSsid.bands.length === 0) {
+      throw new Error(`SSID "${deviceSsid.ssid}" must specify bands`);
+    }
+    resolved.push({
+      ssid: template.ssid,
+      passphrase: template.passphrase,
+      vlan: template.vlan,
+      roaming: template.roaming,
+      bands: deviceSsid.bands
+    });
+  }
+
+  return resolved;
+}
+
 function validateDeviceConfig(config, index, deploymentSsids) {
   const errors = [];
   const role = config.role || 'standalone';
@@ -27,7 +66,10 @@ function validateDeviceConfig(config, index, deploymentSsids) {
     if (!config.device.password) errors.push(`Device ${index}: Missing device.password`);
   }
 
-  // CAP devices get SSIDs from controller, so they don't need local SSIDs
+  // Build lookup map from deployment-level SSIDs for reference validation
+  const deploymentSsidMap = new Map((deploymentSsids || []).map(s => [s.ssid, s]));
+
+  // CAP devices can have optional SSIDs for per-WAP customization
   if (role === 'cap') {
     // Validate CAP-specific config - support both capsman.* (new) and cap.* (legacy)
     const capsmanConfig = config.capsman || {};
@@ -36,31 +78,92 @@ function validateDeviceConfig(config, index, deploymentSsids) {
     if (controllerAddresses.length === 0) {
       errors.push(`Device ${index} (CAP): Missing capsman.controllerAddresses`);
     }
+
+    // Validate per-device SSIDs if present (must reference deployment-level SSIDs)
+    if (config.ssids && config.ssids.length > 0) {
+      config.ssids.forEach((ssid, ssidIndex) => {
+        if (!ssid.ssid) {
+          errors.push(`Device ${index}, SSID ${ssidIndex}: missing ssid name`);
+        } else if (!deploymentSsidMap.has(ssid.ssid)) {
+          errors.push(`Device ${index}, SSID ${ssidIndex}: SSID "${ssid.ssid}" not found in deployment-level ssids`);
+        }
+        if (!ssid.bands || ssid.bands.length === 0) {
+          errors.push(`Device ${index}, SSID ${ssidIndex}: missing bands`);
+        }
+        if (ssid.bands) {
+          ssid.bands.forEach(band => {
+            if (band !== '2.4GHz' && band !== '5GHz') {
+              errors.push(`Device ${index}, SSID ${ssidIndex}: invalid band '${band}'`);
+            }
+          });
+        }
+      });
+    }
   } else {
     // Controller and standalone devices need SSIDs
-    const ssids = config.ssids || deploymentSsids || [];
-    if (ssids.length === 0) {
-      errors.push(`Device ${index}: No SSIDs defined`);
-    }
+    const ssids = config.ssids || [];
 
-    ssids.forEach((ssid, ssidIndex) => {
-      if (!ssid.ssid) errors.push(`Device ${index}, SSID ${ssidIndex}: missing ssid`);
-      if (!ssid.passphrase) errors.push(`Device ${index}, SSID ${ssidIndex}: missing passphrase`);
-      if (ssid.passphrase === 'UNKNOWN') {
-        errors.push(`Device ${index}, SSID ${ssidIndex} (${ssid.ssid}): passphrase is UNKNOWN - please set a real passphrase. UNKNOWN is used in backups when passphrases cannot be retrieved from devices.`);
+    // Determine if this is per-device reference format or legacy full-SSID format
+    // Reference format: device SSIDs only have ssid+bands, no passphrase
+    // Legacy format: device SSIDs have passphrase (or fall back to deploymentSsids)
+    const isReferenceFormat = ssids.length > 0 && !ssids[0].passphrase && deploymentSsidMap.size > 0;
+
+    if (isReferenceFormat) {
+      // Reference format: validate that SSIDs exist in deployment templates
+      ssids.forEach((ssid, ssidIndex) => {
+        if (!ssid.ssid) {
+          errors.push(`Device ${index}, SSID ${ssidIndex}: missing ssid name`);
+        } else if (!deploymentSsidMap.has(ssid.ssid)) {
+          errors.push(`Device ${index}, SSID ${ssidIndex}: SSID "${ssid.ssid}" not found in deployment-level ssids`);
+        }
+        if (!ssid.bands || ssid.bands.length === 0) {
+          errors.push(`Device ${index}, SSID ${ssidIndex}: missing bands`);
+        }
+        if (ssid.bands) {
+          ssid.bands.forEach(band => {
+            if (band !== '2.4GHz' && band !== '5GHz') {
+              errors.push(`Device ${index}, SSID ${ssidIndex}: invalid band '${band}'`);
+            }
+          });
+        }
+      });
+
+      // Validate deployment-level SSIDs have required fields
+      deploymentSsids.forEach((ssid, ssidIndex) => {
+        if (!ssid.ssid) errors.push(`Deployment SSID ${ssidIndex}: missing ssid`);
+        if (!ssid.passphrase) errors.push(`Deployment SSID ${ssidIndex}: missing passphrase`);
+        if (ssid.passphrase === 'UNKNOWN') {
+          errors.push(`Deployment SSID ${ssidIndex} (${ssid.ssid}): passphrase is UNKNOWN - please set a real passphrase`);
+        }
+        if (ssid.vlan === undefined) errors.push(`Deployment SSID ${ssidIndex}: missing vlan`);
+      });
+    } else {
+      // Legacy format: device has full SSIDs OR use deploymentSsids as fallback
+      const effectiveSsids = ssids.length > 0 ? ssids : (deploymentSsids || []);
+
+      if (effectiveSsids.length === 0) {
+        errors.push(`Device ${index}: No SSIDs defined`);
       }
-      if (ssid.vlan === undefined) errors.push(`Device ${index}, SSID ${ssidIndex}: missing vlan`);
-      if (!ssid.bands || ssid.bands.length === 0) {
-        errors.push(`Device ${index}, SSID ${ssidIndex}: missing bands`);
-      }
-      if (ssid.bands) {
-        ssid.bands.forEach(band => {
-          if (band !== '2.4GHz' && band !== '5GHz') {
-            errors.push(`Device ${index}, SSID ${ssidIndex}: invalid band '${band}'`);
-          }
-        });
-      }
-    });
+
+      effectiveSsids.forEach((ssid, ssidIndex) => {
+        if (!ssid.ssid) errors.push(`Device ${index}, SSID ${ssidIndex}: missing ssid`);
+        if (!ssid.passphrase) errors.push(`Device ${index}, SSID ${ssidIndex}: missing passphrase`);
+        if (ssid.passphrase === 'UNKNOWN') {
+          errors.push(`Device ${index}, SSID ${ssidIndex} (${ssid.ssid}): passphrase is UNKNOWN - please set a real passphrase. UNKNOWN is used in backups when passphrases cannot be retrieved from devices.`);
+        }
+        if (ssid.vlan === undefined) errors.push(`Device ${index}, SSID ${ssidIndex}: missing vlan`);
+        if (!ssid.bands || ssid.bands.length === 0) {
+          errors.push(`Device ${index}, SSID ${ssidIndex}: missing bands`);
+        }
+        if (ssid.bands) {
+          ssid.bands.forEach(band => {
+            if (band !== '2.4GHz' && band !== '5GHz') {
+              errors.push(`Device ${index}, SSID ${ssidIndex}: invalid band '${band}'`);
+            }
+          });
+        }
+      });
+    }
   }
 
   return errors;
@@ -203,12 +306,21 @@ async function main() {
 
     const role = deviceConfig.role || 'standalone';
 
-    // For controller: use deployment-level SSIDs if no device-level SSIDs
-    // For CAP: no SSIDs needed (gets from controller)
-    let ssids = deviceConfig.ssids;
-    if (role === 'controller' && (!ssids || ssids.length === 0)) {
+    // Resolve SSIDs for this device
+    // New format: device SSIDs are references (ssid+bands only, PSK/VLAN from deployment)
+    // Legacy format: device SSIDs are full (have passphrase), or fall back to deploymentSsids
+    let ssids = deviceConfig.ssids || [];
+    const deviceHasReferenceSsids = ssids.length > 0 && !ssids[0].passphrase && deploymentSsids.length > 0;
+
+    if (deviceHasReferenceSsids) {
+      // New per-device format: resolve references against deployment-level templates
+      ssids = resolveSsidsForDevice(ssids, deploymentSsids);
+    } else if (ssids.length === 0 && (role === 'controller' || role === 'standalone')) {
+      // Legacy: no device SSIDs, fall back to deployment-level SSIDs
       ssids = deploymentSsids;
     }
+    // Note: CAPs without device SSIDs will have empty ssids array here,
+    // they'll get SSIDs from controller during Phase 2.5
 
     // Build unified capsman config from various sources
     // New unified format: capsman.vlan.id/network/address
@@ -357,11 +469,20 @@ async function main() {
 
       // Build array of CAP device configs with wifi settings (txPower, etc.)
       // These are passed to configure per-device settings on CAP interfaces
-      const capDeviceConfigs = caps.map(cap => ({
-        host: cap.device?.host,
-        identity: cap.identity,
-        wifi: cap.wifi
-      }));
+      // Also include per-device SSIDs if configured (for per-WAP SSID customization)
+      const capDeviceConfigs = caps.map(cap => {
+        // Resolve SSIDs for this CAP if it has device-level SSID references
+        const capSsids = cap.ssids && cap.ssids.length > 0 && !cap.ssids[0].passphrase
+          ? resolveSsidsForDevice(cap.ssids, deploymentSsids)
+          : null;  // null means use controller's SSIDs
+
+        return {
+          host: cap.device?.host,
+          identity: cap.identity,
+          wifi: cap.wifi,
+          ssids: capSsids  // Per-CAP SSIDs (or null for default)
+        };
+      });
 
       try {
         await configureCapInterfacesOnController(controllerConfig, capDeviceConfigs);
@@ -394,10 +515,16 @@ async function main() {
 
     // Phase 2.6: Configure local WiFi fallback on CAP devices
     // This allows CAPs to continue providing WiFi even when controller is unreachable
-    if (caps.length > 0 && deploymentSsids.length > 0) {
+    // Uses per-device SSIDs if configured, otherwise deployment-level SSIDs
+    const capsWithSsids = caps.filter(cap => {
+      // CAP needs SSIDs either at device level or deployment level
+      return (cap.ssids && cap.ssids.length > 0) || deploymentSsids.length > 0;
+    });
+
+    if (capsWithSsids.length > 0) {
       console.log(`\n=== Phase 2.6: Configuring Local WiFi Fallback on CAP Devices ===\n`);
 
-      for (const cap of caps) {
+      for (const cap of capsWithSsids) {
         const capConfig = {
           host: cap.device.host,
           username: cap.device.username,
@@ -406,8 +533,13 @@ async function main() {
           wifi: cap.wifi
         };
 
+        // Resolve SSIDs for this CAP if it has device-level SSID references
+        const capSsids = cap.ssids && cap.ssids.length > 0 && !cap.ssids[0].passphrase
+          ? resolveSsidsForDevice(cap.ssids, deploymentSsids)
+          : deploymentSsids;  // Fall back to deployment-level SSIDs
+
         try {
-          await configureLocalCapFallback(capConfig, deploymentSsids, deploymentCountry || 'United States');
+          await configureLocalCapFallback(capConfig, capSsids, deploymentCountry || 'United States');
         } catch (error) {
           // Non-fatal - CAP still works with controller, just no fallback
           console.error(`⚠️  Local fallback warning for ${cap.device.host}: ${error.message}`);

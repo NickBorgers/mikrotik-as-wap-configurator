@@ -184,6 +184,45 @@ const BAND_TO_INTERFACE = {
   - https://forum.mikrotik.com/t/wifi-capsman-wifi-qcom-ac-caps-and-slave-interfaces-in-vlan-environnent/181308
   - https://www.jaburjak.cz/posts/mikrotik-wifi-qcom-ac-vlans/
 
+**Per-WAP SSID Customization (Added v5.1.0)**
+- Enable each access point to broadcast different SSIDs on different bands
+- Possible because wifi-qcom CAPsMAN configures CAP interfaces directly on controller
+- Schema: Deployment-level SSIDs define PSK/VLAN/roaming, devices specify which SSIDs to broadcast
+- Configuration structure:
+  ```yaml
+  # Deployment level - define SSIDs once
+  ssids:
+    - ssid: PartlyPrimary
+      passphrase: secret
+      vlan: 100
+    - ssid: PartlyIoT
+      passphrase: iot-secret
+      vlan: 200
+
+  devices:
+    # Each device specifies which SSIDs and bands
+    - device: { host: indoor-wap.example.com, ... }
+      role: cap
+      ssids:
+        - ssid: PartlyPrimary
+          bands: [2.4GHz, 5GHz]
+        - ssid: PartlyIoT
+          bands: [2.4GHz]
+
+    - device: { host: outdoor-wap.example.com, ... }
+      role: cap
+      ssids:
+        - ssid: PartlyPrimary
+          bands: [2.4GHz]  # 2.4GHz only for range
+        # No PartlyIoT on this AP
+  ```
+- Implementation:
+  - `resolveSsidsForDevice()` merges device SSID refs with deployment templates
+  - Phase 2.5: Passes per-CAP resolved SSIDs to controller
+  - Phase 2.6: Uses per-CAP resolved SSIDs for local fallback
+  - Backup: Auto-promotes SSIDs to deployment level for CAPsMAN deployments
+- Use cases: Indoor/outdoor differentiation, guest network isolation, IoT placement
+
 **CAPsMAN Radio Detection & Interface Renaming (Added v4.3.1)**
 - MikroTik names CAP interfaces based on physical interface number, NOT actual radio band
 - Problem: Many devices have swapped radios (wifi1=5GHz, wifi2=2.4GHz), including:
