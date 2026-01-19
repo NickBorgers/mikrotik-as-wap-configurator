@@ -142,17 +142,16 @@ const BAND_TO_INTERFACE = {
 - Legacy format (`cap.controllerAddresses`, `capsmanAddress`) still supported
 - Rollback: `/interface vlan remove [find name=capsman-vlan]`
 
-**wifi-qcom CAPsMAN (Added v4.3.0)**
+**wifi-qcom CAPsMAN (Added v4.3.0, Updated v5.0.0)**
+- **v5.0.0: wifi-qcom is the only supported WiFi package** (wifiwave2 support removed)
 - wifi-qcom doesn't support `/interface/wifi/capsman/configuration` or `/provisioning` commands
-- These commands fail with "bad command name" on wifi-qcom devices
 - Solution: Configure CAP-operated interfaces directly on the controller after CAPs connect
 - CAP interfaces appear on controller with naming pattern: `<cap-identity>-2g`, `<cap-identity>-5g`
-- Deployment phases for wifi-qcom:
+- Deployment phases:
   1. Phase 1: Enable CAPsMAN service on controller (no configuration objects)
   2. Phase 2: CAPs connect to controller, creating CAP interfaces
   3. Phase 2.5: Configure each CAP interface directly with SSID/security/datapath
-- wifiwave2 devices continue using provisioning rules (Phase 2.5 auto-skips)
-- Detection: `detectWifiPackage()` returns `wifi-qcom` or `wifiwave2`
+- Detection: `detectWifiPackage()` returns `wifi-qcom` or null (wifiwave2 is rejected)
 - Example CAP interface configuration:
   ```
   /interface/wifi set shed-wap-2g \

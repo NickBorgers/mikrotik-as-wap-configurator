@@ -1,5 +1,54 @@
 # Changelog
 
+## [5.0.0] - 2026-01-19 - Remove wifiwave2 Support (BREAKING CHANGE)
+
+### Breaking Change: wifiwave2 WiFi Package No Longer Supported
+
+**This release removes support for the wifiwave2 WiFi package.** Only wifi-qcom devices are now supported.
+
+**If you have wifiwave2 devices, you must stay on v4.x releases.**
+
+### Why This Change?
+
+- All 6 devices in the deployment are confirmed wifi-qcom
+- wifi-qcom and wifiwave2 have fundamentally different CAPsMAN implementations
+- Maintaining dual code paths added complexity with no benefit
+- Simplifies the codebase significantly
+
+### What Changed
+
+#### Removed
+- **wifiwave2 CAPsMAN provisioning/configuration objects** - These were only used by wifiwave2
+- **wifiwave2 FT authentication type** (`ft-psk`) - wifi-qcom uses `security.ft=yes` instead
+- **wifiwave2 interface verification** - Used `name=wifi1` instead of `default-name=wifi1`
+- **Phase 2.5 skip logic** - wifiwave2 used provisioning rules, wifi-qcom uses direct configuration
+
+#### Simplified
+- `getWifiPath()` - Always returns `/interface/wifi/*` paths
+- `getCapsmanPath()` - Always returns `/interface/wifi/capsman/*` paths
+- `getCapPath()` - Always returns `/interface/wifi/cap`
+- `detectWifiPackage()` - Returns `wifi-qcom` or `null` (wifiwave2 is rejected with error message)
+
+### Migration Guide
+
+**For wifi-qcom devices (no action needed):**
+- Your devices will continue to work with no configuration changes
+
+**For wifiwave2 devices:**
+- Stay on v4.x releases
+- Use `npm install network-config-as-code@4.8.0` to pin to last compatible version
+- Docker: Use `ghcr.io/nickborgers/mikrotik-as-wap-configurator:4.8.0`
+
+### Files Modified
+- `lib/utils.js` - Simplified path helpers
+- `lib/infrastructure.js` - Updated `detectWifiPackage()` to reject wifiwave2
+- `lib/backup.js` - Removed package detection, always use wifi-qcom
+- `lib/configure.js` - Removed wifiwave2 interface queries and FT auth branching
+- `lib/capsman.js` - Removed CAPsMAN provisioning/configuration object code
+- `lib/wifi-config.js` - Updated comments
+- `CLAUDE.md` - Updated documentation
+- `package.json` - Version bump to 5.0.0
+
 ## [4.8.0] - 2026-01-19 - IGMP Snooping Support
 
 ### Added - IGMP Snooping
