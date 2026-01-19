@@ -3,6 +3,8 @@
 [![GitHub Container Registry](https://img.shields.io/badge/ghcr.io-mikrotik--as--wap--configurator-blue?logo=docker)](https://github.com/NickBorgers/mikrotik-as-wap-configurator/pkgs/container/mikrotik-as-wap-configurator)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+> **Requirements:** RouterOS 7.21+ with **wifi-qcom** package only. The wifiwave2 package is not supported (use v4.x for wifiwave2 devices).
+
 YAML-based configuration management for MikroTik network devices with safe, repeatable deployments.
 
 ## Network Topology
@@ -71,7 +73,7 @@ See [DOCKER.md](DOCKER.md) for complete Docker documentation.
 **Prerequisites:**
 - Node.js (LTS version)
 - SSH access to MikroTik device via Ethernet
-- MikroTik RouterOS v7+ (with WiFi package)
+- MikroTik RouterOS 7.21+ with **wifi-qcom** package (wifiwave2 not supported)
 
 ⚠️ **Important**: Management must be performed over Ethernet (ether1). Do not manage the device via WiFi as the script reconfigures all WiFi interfaces.
 
