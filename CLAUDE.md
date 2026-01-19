@@ -64,7 +64,7 @@
 - Ensures device state matches config.yaml exactly
 - Idempotent: can run multiple times safely
 
-**IGMP Snooping (Added v4.7.0)**
+**IGMP Snooping (Added v4.8.0, Fixed v4.8.1)**
 - Optional per-device boolean setting to enable IGMP snooping on the bridge
 - IGMP snooping optimizes multicast traffic (Sonos, Chromecast, etc.)
 - When enabled, multicast is only forwarded to ports with interested receivers
@@ -73,6 +73,9 @@
 - Configuration: `igmpSnooping: true` at device level
 - Applied during bridge infrastructure setup
 - Backed up from device and stored only when enabled (omitted when false)
+- **v4.8.1 Fix**: Virtual WiFi interfaces (wifi2-ssid2, etc.) on CAP devices must be
+  explicitly added to the bridge for IGMP snooping to track multicast groups on them.
+  Phase 2.7 in `apply-multiple-devices.js` now ensures all WiFi interfaces are bridge ports.
 
 **Band-to-Interface Mapping**
 ```javascript
