@@ -37,10 +37,17 @@ Two changes were required:
 /interface/wifi/cap set ... slaves-static=yes
 ```
 
-**configureLocalCapFallback()** - Now adds bridge ports:
+**configureLocalCapFallback()** - Now adds bridge ports and restarts CAP mode:
 ```routeros
+# Add virtual interfaces to bridge with PVID
 /interface/bridge/port add interface=wifi2-ssid2 bridge=bridge pvid=100
+
+# Restart CAP mode to force CAPsMAN rebind
+/interface/wifi/cap set enabled=no
+/interface/wifi/cap set enabled=yes slaves-static=yes
 ```
+
+The CAP mode restart is necessary because CAPsMAN needs to rebind to the newly created/updated local static interfaces. Without this restart, virtual interfaces remain "Inactive" even with `slaves-static=yes`.
 
 ### Verification
 

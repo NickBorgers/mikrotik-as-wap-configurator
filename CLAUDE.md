@@ -173,6 +173,8 @@ const BAND_TO_INTERFACE = {
 - Solution implemented:
   1. `configureCap()` now sets `slaves-static=yes` automatically
   2. `configureLocalCapFallback()` now adds virtual interfaces as bridge ports with PVID matching VLAN
+  3. `configureLocalCapFallback()` restarts CAP mode after configuring interfaces to force CAPsMAN rebind
+- CAP mode restart is necessary because CAPsMAN must rebind to newly created local interfaces
 - Verification commands:
   ```
   /interface/wifi print                                    # Virtual interfaces should show "BR" (Bound, Running)
