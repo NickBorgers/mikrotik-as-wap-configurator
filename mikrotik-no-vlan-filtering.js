@@ -29,7 +29,6 @@ module.exports = {
   configureCap: lib.configureCap,
   configureCapInterfacesOnController: lib.configureCapInterfacesOnController,
   configureLocalCapFallback: lib.configureLocalCapFallback,
-  ensureCapWifiInBridge: lib.ensureCapWifiInBridge,
   configureAccessLists: lib.configureAccessLists,
   backupAccessLists: lib.backupAccessLists,
   extractHostname: lib.extractHostname,

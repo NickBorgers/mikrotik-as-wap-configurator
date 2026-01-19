@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const yaml = require('js-yaml');
-const { configureMikroTik, configureCapInterfacesOnController, configureLocalCapFallback, ensureCapWifiInBridge, configureAccessLists, extractHostname } = require('./mikrotik-no-vlan-filtering.js');
+const { configureMikroTik, configureCapInterfacesOnController, configureLocalCapFallback, configureAccessLists, extractHostname } = require('./mikrotik-no-vlan-filtering.js');
 
 function loadConfig(configFile) {
   try {
@@ -415,31 +415,6 @@ async function main() {
       }
 
       console.log('\n✓ Local WiFi fallback configuration complete');
-    }
-
-    // Phase 2.7: Ensure WiFi interfaces are in bridge for IGMP snooping
-    // Virtual WiFi interfaces on CAPs may not be automatically added as bridge ports,
-    // which breaks IGMP snooping (multicast groups not tracked on those interfaces)
-    if (caps.length > 0) {
-      console.log(`\n=== Phase 2.7: Ensuring WiFi Bridge Ports for IGMP Snooping ===\n`);
-
-      for (const cap of caps) {
-        const capConfig = {
-          host: cap.device.host,
-          username: cap.device.username,
-          password: cap.device.password,
-          identity: cap.identity
-        };
-
-        try {
-          await ensureCapWifiInBridge(capConfig);
-        } catch (error) {
-          // Non-fatal - IGMP might not work but basic WiFi will
-          console.error(`⚠️  Bridge port check warning for ${cap.device.host}: ${error.message}`);
-        }
-      }
-
-      console.log('\n✓ WiFi bridge port verification complete');
     }
 
     // Phase 3: Configure standalone devices (if any mixed in)

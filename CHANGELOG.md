@@ -1,23 +1,5 @@
 # Changelog
 
-## [4.8.1] - 2026-01-19 - IGMP Snooping Bridge Port Fix
-
-### Fixed - CAP Virtual Interfaces Missing from Bridge
-- **Root cause**: Virtual WiFi interfaces on CAP devices (wifi2-ssid2, wifi2-ssid3, etc.) were not being added as bridge ports
-- **Impact**: IGMP snooping couldn't track multicast groups on these interfaces, causing Sonos and other multicast devices on different WAPs to lose connectivity
-- **Solution**: New Phase 2.7 in `apply-multiple-devices.js` explicitly ensures all WiFi interfaces are bridge ports on CAP devices
-- Fixes [Issue #5](https://github.com/NickBorgers/mikrotik-as-wap-configurator/issues/5)
-
-### Technical Details
-- New function `ensureWifiInterfacesInBridge()` in `lib/infrastructure.js`
-- New wrapper `ensureCapWifiInBridge()` in `lib/capsman.js` for per-device bridge port verification
-- Phase 2.7 runs after local WiFi fallback configuration, connecting to each CAP and adding missing WiFi interfaces to the bridge
-- Uses idempotent bridge port addition (handles already-exists gracefully)
-
-### Behavior Change
-- Bridge ports are now explicitly managed for WiFi interfaces, not relying solely on `datapath.bridge` setting
-- This ensures IGMP snooping works correctly on all WiFi virtual interfaces
-
 ## [4.8.0] - 2026-01-19 - IGMP Snooping Support
 
 ### Added - IGMP Snooping
