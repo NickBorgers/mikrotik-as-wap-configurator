@@ -1,5 +1,25 @@
 # Changelog
 
+## [5.1.1] - 2026-01-19 - Fix Radio Disable for Per-WAP SSID
+
+### Fixed
+- CAP interfaces are now properly disabled when no SSIDs are configured for a band
+- Previously, skipping configuration left interfaces enabled with stale config
+- Now Phase 2.5 explicitly runs `disabled=yes` on unused band interfaces
+- CAPsMAN propagates this to CAP devices, powering down the unused radio
+
+### Example
+```yaml
+# shed-wap configured with 5GHz only
+ssids:
+  - ssid: PartlyPrimary
+    bands: [5GHz]
+```
+Results in:
+- `shed-wap-2g` on controller: disabled
+- `wifi1` on shed-wap CAP: disabled (MBX flag)
+- 2.4GHz radio powered off
+
 ## [5.1.0] - 2026-01-19 - Per-WAP SSID Customization
 
 ### Added - Per-WAP SSID Customization for CAPsMAN Deployments
