@@ -1,5 +1,76 @@
 # Changelog
 
+## [4.9.0] - 2026-01-19 - Fix Virtual SSID Traffic on CAP Devices
+
+### Fixed - Virtual SSID Traffic Not Flowing on CAP Devices
+- **Critical Bug**: Clients on virtual SSIDs (PartlySonos, PartlyIoT, PartlyWork) could connect but had no network connectivity
+- **Symptom**: Clients associated successfully but weren't in bridge host table, couldn't be pinged
+- **Root cause**: wifi-qcom CAPsMAN "traffic processing on CAP" mode requires two settings that were missing
+- Fixes [Issue #5](https://github.com/NickBorgers/mikrotik-as-wap-configurator/issues/5)
+
+### Technical Root Cause
+
+With wifi-qcom CAPsMAN in "traffic processing on CAP" mode:
+1. CAPsMAN manages the control plane (SSID broadcast, client association)
+2. CAP handles the data plane locally (bridging traffic)
+
+The problem was:
+1. **`slaves-static=no` (default)**: CAPsMAN didn't enable local virtual interfaces for data traffic
+2. **No bridge ports for virtual interfaces**: Even with `datapath.bridge=bridge`, virtual WiFi interfaces weren't added as bridge ports
+
+### Solution
+
+Two changes were required:
+
+1. **Enable `slaves-static=yes`** in CAP settings
+   - This tells CAPsMAN to use local static virtual interfaces for data traffic
+   - Virtual interfaces now show as "Bound, Running" instead of "Inactive"
+
+2. **Add virtual interfaces as bridge ports with correct PVID**
+   - Each virtual interface needs a bridge port entry
+   - PVID must match the SSID's VLAN for proper traffic handling
+
+### Implementation
+
+**configureCap()** - Now enables `slaves-static=yes`:
+```routeros
+/interface/wifi/cap set ... slaves-static=yes
+```
+
+**configureLocalCapFallback()** - Now adds bridge ports:
+```routeros
+/interface/bridge/port add interface=wifi2-ssid2 bridge=bridge pvid=100
+```
+
+### Verification
+
+After applying configuration, verify on CAP devices:
+```bash
+# Virtual interfaces should show BR (Bound, Running)
+/interface/wifi print
+# Should show: wifi2-ssid2 BR, wifi2-ssid3 BR, etc.
+
+# Interface traffic stats should show non-zero values
+/interface print stats where name~"ssid"
+# Should show RX/TX bytes for virtual interfaces
+
+# Clients should appear on virtual interfaces in bridge host table
+/interface/bridge/host print where on-interface~"ssid"
+# Should show client MACs on wifi1-ssid2, wifi2-ssid2, etc.
+```
+
+### Files Modified
+- `lib/capsman.js` - Added `slaves-static=yes` to CAP configuration
+- `lib/capsman.js` - Added bridge port creation for virtual interfaces in `configureLocalCapFallback()`
+
+### Affected Devices
+- All wifi-qcom CAP devices using CAPsMAN with multiple SSIDs
+- Devices with virtual SSIDs like PartlySonos, PartlyIoT, PartlyWork
+
+### References
+- [MikroTik Forum: wifi CAPsMAN and slave interfaces](https://forum.mikrotik.com/t/wifi-capsman-wifi-qcom-ac-caps-and-slave-interfaces-in-vlan-environnent/181308)
+- [VLANs on MikroTik cAP ac with wifi-qcom-ac](https://www.jaburjak.cz/posts/mikrotik-wifi-qcom-ac-vlans/)
+
 ## [4.8.0] - 2026-01-19 - IGMP Snooping Support
 
 ### Added - IGMP Snooping
