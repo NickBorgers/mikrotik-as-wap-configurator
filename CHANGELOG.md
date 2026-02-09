@@ -1,5 +1,41 @@
 # Changelog
 
+## [5.3.0] - 2026-02-09 - Fix CAPsMAN Channel Propagation
+
+### Fixed - CAPsMAN Channel Settings Not Applied to CAP Interfaces
+
+Channel frequency settings from device configuration were only applied to local WiFi fallback configuration, not to CAPsMAN-provisioned interfaces on the controller. This caused CAPsMAN to auto-select channels, ignoring the configured channel plan.
+
+- Fixes [Issue #10](https://github.com/NickBorgers/mikrotik-as-wap-configurator/issues/10)
+
+### Root Cause
+
+Phase 2.5 configured SSID, security, datapath, and VLAN on CAPsMAN-provisioned interfaces, but did not set `channel.frequency`. The channel settings from each CAP's config were available but never applied to the controller-side interfaces.
+
+### Solution
+
+Apply channel settings AFTER all SSID/security/datapath configuration is complete:
+1. Configure all master interfaces and virtual interfaces first
+2. Apply channel settings using `applyBandSettings()` as the final step
+
+Channel settings must be applied last because CAPsMAN operations during virtual interface creation can reset `channel.frequency` to auto-select.
+
+### Log Output
+```
+=== Configuring CAP Interfaces ===
+Configuring far-bedroom-wap-2g with SSID: PartlySonos
+  ✓ Configured far-bedroom-wap-2g: SSID="PartlySonos", VLAN=100
+...
+=== Applying Channel Settings ===
+✓ Applied 2.4GHz settings: channel.frequency=2412, channel.width=20mhz
+  ✓ far-bedroom-wap-2g: channel applied
+✓ Applied 5GHz settings: channel.frequency=5500, channel.tx-power=15, channel.width=20/40/80mhz
+  ✓ far-bedroom-wap-5g: channel applied
+```
+
+### Files Modified
+- `lib/capsman.js` - Apply channel settings as final step after all interface configuration
+
 ## [5.2.0] - 2026-02-08 - Fix Controller Local Radios Not Configured
 
 ### Fixed - Controller Local Radio Interfaces Not Configured by Deploy
