@@ -159,8 +159,18 @@ const BAND_TO_INTERFACE = {
       security.authentication-types=wpa2-psk \
       security.passphrase="password" \
       datapath.bridge=bridge datapath.vlan-id=100 \
+      channel.frequency=2412 \
       disabled=no
   ```
+
+**CAPsMAN Channel Propagation (Fixed v5.3.0)**
+- Problem: Channel settings from CAP device config were not applied to CAPsMAN-provisioned interfaces
+- CAPsMAN would auto-select channels, ignoring the configured channel plan
+- Root cause: Phase 2.5 configured SSID/security/datapath but not `channel.frequency`
+- Solution: Apply channel settings as FINAL step, after all interface configuration is complete
+- Channel settings must be applied last because CAPsMAN operations during virtual interface creation can reset channel.frequency
+- Phase 2.5 now has a dedicated "Applying Channel Settings" phase at the end
+- See: https://github.com/NickBorgers/mikrotik-as-wap-configurator/issues/10
 
 **wifi-qcom Virtual SSID Traffic Fix (Added v4.9.0)**
 - Problem: Clients on virtual SSIDs (PartlySonos, PartlyIoT, etc.) could associate but had no network connectivity
