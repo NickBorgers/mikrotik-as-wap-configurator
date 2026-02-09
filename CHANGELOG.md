@@ -1,5 +1,43 @@
 # Changelog
 
+## [5.2.0] - 2026-02-08 - Fix Controller Local Radios Not Configured
+
+### Fixed - Controller Local Radio Interfaces Not Configured by Deploy
+- **Bug**: In CAPsMAN deployments, the controller's own local radios (wifi1/wifi2) were never configured with SSID/security/datapath settings
+- **Symptom**: Controller local radios retained stale settings from previous runs. IoT SSIDs had `security.ft=yes` when they should have had `ft=no`, causing hundreds of FT authentication failures per day
+- **Root cause**: Phase 1 set `configuration.manager=capsman-or-local` but never applied SSID settings. Phase 2.5 configured remote CAP interfaces but explicitly skipped local interfaces (`wifi1`/`wifi2`)
+- Fixes [Issue #9](https://github.com/NickBorgers/mikrotik-as-wap-configurator/issues/9)
+
+### Solution
+Phase 2.5 (`configureCapInterfacesOnController()`) now configures controller local radios after configuring remote CAP interfaces:
+
+1. **Detect radio layout** - Handles swapped radios on cAP ax, etc.
+2. **Clean up old virtual interfaces** - Removes only virtuals whose master is `wifi1`/`wifi2` (not remote CAP virtuals)
+3. **Configure master interfaces** - Applies primary SSID with correct FT, steering, datapath/VLAN settings
+4. **Create virtual interfaces** - Additional SSIDs get virtual interfaces with bridge ports and correct PVID
+5. **Disable unused bands** - If no SSIDs target a band, the master interface is disabled
+
+### Verification
+After applying configuration, verify on controller:
+```bash
+# Check controller local interfaces have correct FT settings
+/interface/wifi print detail where name~"wifi"
+# IoT SSIDs should show security.ft=no
+# Roaming SSIDs should show security.ft=yes
+
+# Check steering profiles exist
+/interface/wifi/steering print
+
+# Check virtual interfaces have bridge ports with correct PVID
+/interface/bridge/port print where interface~"wifi"
+```
+
+### Files Modified
+- `lib/capsman.js` - Added controller local radio configuration to `configureCapInterfacesOnController()`
+- `CHANGELOG.md` - This entry
+- `package.json` - Version bump to 5.2.0
+- `CLAUDE.md` - Updated CAPsMAN documentation
+
 ## [5.1.1] - 2026-01-19 - Fix Radio Disable for Per-WAP SSID
 
 ### Fixed

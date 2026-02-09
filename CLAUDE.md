@@ -150,7 +150,7 @@ const BAND_TO_INTERFACE = {
 - Deployment phases:
   1. Phase 1: Enable CAPsMAN service on controller (no configuration objects)
   2. Phase 2: CAPs connect to controller, creating CAP interfaces
-  3. Phase 2.5: Configure each CAP interface directly with SSID/security/datapath
+  3. Phase 2.5: Configure each CAP interface directly with SSID/security/datapath, **then configure controller local radios** (wifi1/wifi2) with correct per-SSID settings (FT, steering, datapath/VLAN)
 - Detection: `detectWifiPackage()` returns `wifi-qcom` or null (wifiwave2 is rejected)
 - Example CAP interface configuration:
   ```
