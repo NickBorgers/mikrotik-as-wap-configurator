@@ -27,6 +27,17 @@ syslog:
   topics:                 # Log topics to send
     - wireless            # WiFi client connect/disconnect events
 
+# Fleet-wide MAC blocks - reject these devices at 802.11 association on every AP.
+# Use for misbehaving clients (e.g., appliances firewalled at the gateway that
+# keep retrying their cloud connection every ~20min, burning airtime).
+# Compare to per-device `lockedDevices`, which pins a MAC to one specific AP.
+# Optional - omit if no devices need to be blocked fleet-wide.
+# blockedDevices:
+#   - hostname: refrigerator
+#     mac: FC:B9:7E:79:59:FA
+#   - hostname: laundry
+#     mac: FC:B9:7E:51:30:3C
+
 devices:
   # First Access Point
   - device:

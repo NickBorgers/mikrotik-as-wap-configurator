@@ -1,5 +1,51 @@
 # Changelog
 
+## [6.0.0] - 2026-05-01 - Fleet-Wide Device Blocking
+
+### Added — `blockedDevices` (top-level)
+
+A new top-level configuration field rejects a MAC at 802.11 association on every interface across the entire fleet. Useful for stopping reconnect storms from misbehaving clients (e.g., appliances that are firewalled at the gateway but keep retrying their cloud connection every ~20 minutes, burning airtime).
+
+Compare to existing `lockedDevices`, which pins a MAC to one specific AP (accept on target, reject elsewhere). `blockedDevices` issues reject rules everywhere with no corresponding accept rules.
+
+```yaml
+# Top level alongside ssids, devices, country
+blockedDevices:
+  - hostname: refrigerator
+    mac: FC:B9:7E:79:59:FA
+  - hostname: laundry
+    mac: FC:B9:7E:51:30:3C
+```
+
+Rules are tagged with the comment `<hostname> - blocked everywhere`. Diff-based update logic from v4.x applies: re-running with the same `blockedDevices` is a no-op.
+
+To temporarily allow a blocked device (e.g., for firmware updates):
+1. Comment the entry out, re-run apply (rules are removed).
+2. Allow at upstream firewall.
+3. After update, restore the entry, re-run apply.
+
+### Breaking — `backupAccessLists()` return shape
+
+`lib/access-list.js#backupAccessLists()` now returns `{lockedDevices, blockedDevices}` instead of a bare array of locked devices. Callers must destructure:
+
+```js
+// before (5.x)
+const lockedDevices = await backupAccessLists(mt, wifiPath);
+
+// after (6.0)
+const { lockedDevices, blockedDevices } = await backupAccessLists(mt, wifiPath);
+```
+
+In-tree callers (`lib/backup.js`, `backup-multiple-devices.js`) have been updated. External consumers using this function directly need the same change. Top-level `apply-config.js` / `apply-multiple-devices.js` flows are unaffected — `blockedDevices` is opt-in and the existing config keeps working unchanged.
+
+### Files modified
+- `lib/access-list.js` — `buildDesiredRules` accepts `blockedDevices`, `getCurrentLockingRules` filter expanded, `configureAccessLists` signature extended, `backupAccessLists` return shape changed
+- `apply-multiple-devices.js` — reads top-level `config.blockedDevices`, threads into access-list phase
+- `lib/backup.js` — destructures new return shape, stores blocked list on the config
+- `backup-multiple-devices.js` — promotes per-device `blockedDevices` to deployment level
+- `multiple-devices.example.yaml` — documents the new field
+- `package.json` — version 6.0.0
+
 ## [5.3.0] - 2026-02-09 - Fix CAPsMAN Channel Propagation
 
 ### Fixed - CAPsMAN Channel Settings Not Applied to CAP Interfaces

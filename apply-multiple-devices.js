@@ -493,7 +493,7 @@ async function main() {
       }
     }
 
-    // Phase 2.75: Configure access-lists (WAP locking)
+    // Phase 2.75: Configure access-lists (WAP locking + fleet blocking)
     // Collect lockedDevices from all device configs
     const allLockedDevices = devices.flatMap(device =>
       (device.lockedDevices || []).map(ld => ({
@@ -502,14 +502,17 @@ async function main() {
       }))
     );
 
-    if (allLockedDevices.length > 0) {
-      console.log(`\n=== Phase 2.75: Configuring Access-Lists (${allLockedDevices.length} locked device(s)) ===\n`);
+    // Top-level blockedDevices: reject across the whole fleet
+    const allBlockedDevices = config.blockedDevices || [];
+
+    if (allLockedDevices.length > 0 || allBlockedDevices.length > 0) {
+      console.log(`\n=== Phase 2.75: Configuring Access-Lists (${allLockedDevices.length} locked, ${allBlockedDevices.length} blocked) ===\n`);
       try {
-        await configureAccessLists(controllerConfig, allLockedDevices, deploymentSsids, devices);
+        await configureAccessLists(controllerConfig, allLockedDevices, deploymentSsids, devices, allBlockedDevices);
         console.log('✓ Access-list configuration complete');
       } catch (error) {
         console.error(`⚠️  Access-list configuration warning: ${error.message}`);
-        console.error('    Locked devices may not be properly configured.');
+        console.error('    Locked/blocked devices may not be properly configured.');
       }
     }
 

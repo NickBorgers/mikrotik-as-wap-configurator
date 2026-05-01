@@ -185,7 +185,8 @@ The script is **idempotent** and safe to run multiple times.
 
 ### Enterprise Features
 - **LACP bonding** - Redundant management uplinks (802.3ad)
-- **WAP locking** - Lock specific clients to specific APs via access-list rules
+- **WAP locking** - Lock specific clients to specific APs via access-list rules (`lockedDevices`)
+- **Fleet-wide blocking** - Reject misbehaving clients at 802.11 association on every AP (`blockedDevices`)
 - **Remote syslog** - Centralized logging of WiFi events
 - **Automatic identity** - Device identity extracted from FQDN hostname
 

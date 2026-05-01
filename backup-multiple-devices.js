@@ -385,6 +385,18 @@ async function main() {
     }
   }
 
+  // Promote blockedDevices to top level (it's fleet-wide, not per-device).
+  // The controller is the source of truth — its access-list applies to all CAPs.
+  for (const device of results.devices) {
+    if (device.blockedDevices && device.blockedDevices.length > 0) {
+      if (!results.blockedDevices) {
+        results.blockedDevices = device.blockedDevices;
+        console.log(`\nPromoted ${device.blockedDevices.length} blocked device(s) to deployment level`);
+      }
+      delete device.blockedDevices;
+    }
+  }
+
   const header = `# MikroTik Multi-Device Configuration
 # Last updated: ${new Date().toISOString()}
 # Devices: ${devices.length} (Successful: ${successCount}, Failed: ${failureCount})
