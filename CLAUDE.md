@@ -384,13 +384,22 @@ const BAND_TO_INTERFACE = {
 3. Commit with version message
 4. Create git tag: `git tag -a vX.Y.Z -m "description"`
 5. Push: `git push origin main && git push origin vX.Y.Z`
-6. GitHub Actions automatically builds/publishes Docker image to `ghcr.io/nickborgers/mikrotik-as-wap-configurator`
+6. Create the GitHub release object, which is what publishes the image:
+   `gh release create vX.Y.Z --title "vX.Y.Z - Short Description" --notes "..."`
+
+**Pushing the tag publishes nothing.** `.github/workflows/publish.yml` triggers on
+`release: published`, not on tag push. Step 6 is the step that builds and pushes the
+Docker image. A tag with no release leaves the previous image sitting at `:latest`.
+The workflow can also be run by hand via `workflow_dispatch`.
+
+Release title convention: `vX.Y.Z - Short Description`.
 
 ### Docker Image
 
 - Multi-stage build with Node.js Alpine
-- Entrypoint: `docker-entrypoint.sh` handles help/example/apply
-- Published to Docker Hub on git tag push
+- Entrypoint: `docker-entrypoint.sh` handles help/example/example-multiple/example-router/apply
+- Published to the GitHub Container Registry, `ghcr.io/nickborgers/mikrotik-as-wap-configurator`, when a GitHub release is published (NOT Docker Hub, and NOT on tag push)
+- Image tags come from the git tag with the leading `v` stripped, via `docker/metadata-action` semver patterns: `6.1.0`, `6.1`, `6`, plus `latest`. Pull `:6.1.0`, not `:v6.1.0`
 - Multi-arch: linux/amd64, linux/arm64
 - Volume mount: `/config/config.yaml`
 
