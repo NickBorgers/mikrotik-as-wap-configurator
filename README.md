@@ -183,12 +183,128 @@ The script is **idempotent** and safe to run multiple times.
 - **Local WiFi fallback** - CAPs continue working if controller goes offline
 - See `multiple-devices.example.yaml` for CAPsMAN configuration examples
 
+### Router Mode with Multi-WAN Failover
+- **Router role** - The device is the gateway, not an access point (`role: router`)
+- **Multiple uplinks** - Ethernet, LTE, PPPoE and static WANs in one config
+- **Automatic failover** - Traffic moves to the next uplink when one dies
+- **Path-aware health checks** - Probes a real internet address, not just the next hop
+- **Full gateway stack** - NAT, DHCP server, DNS cache and a firewall
+- See `router.example.yaml` for a complete configuration
+
 ### Enterprise Features
 - **LACP bonding** - Redundant management uplinks (802.3ad)
 - **WAP locking** - Lock specific clients to specific APs via access-list rules (`lockedDevices`)
 - **Fleet-wide blocking** - Reject misbehaving clients at 802.11 association on every AP (`blockedDevices`)
 - **Remote syslog** - Centralized logging of WiFi events
 - **Automatic identity** - Device identity extracted from FQDN hostname
+
+## Router Mode
+
+Most of this tool configures access points that sit behind someone else's
+gateway. Those roles deliberately strip router functions. Router mode does the
+opposite: the device *is* the gateway.
+
+Set `role: router` and describe two things, the LAN it owns and the uplinks it
+can use.
+
+```yaml
+role: router
+
+lan:
+  address: 192.168.80.1/24
+  ports: [ether2, ether3, ether4, ether5]
+  dhcpServer:
+    pool: 192.168.80.100-192.168.80.200
+    leaseTime: 12h
+  dns:
+    servers: [1.1.1.1, 8.8.8.8]
+
+wan:
+  - name: primary
+    interface: ether1
+    type: dhcp        # dhcp | static | pppoe | lte
+    distance: 1       # lower wins
+    probe: 8.8.8.8
+  - name: backup
+    interface: lte1
+    type: lte
+    apn: fast.t-mobile.com
+    distance: 2
+    probe: 1.1.1.1    # must differ from every other probe
+```
+
+Apply it the same way as any other config:
+
+```bash
+./apply-config.js router.yaml
+```
+
+### How failover works
+
+Each uplink gets two routes. A **probe route** pins one address to that uplink.
+A **default route** points at the probe address rather than a real next hop, so
+the router has to resolve it through the probe route.
+
+Probing a real internet address is the point. A cable modem that has lost its
+own uplink still answers pings on its LAN side, so checking only the next hop
+would never notice. Checking `8.8.8.8` does.
+
+Two different failures are detected two different ways, and they are not
+equally fast:
+
+| What broke | How it is caught | Measured |
+|---|---|---|
+| The link went down (cable pulled, port died) | The probe route's next hop stops resolving, so the default route drops out at once | **1.2 s** |
+| The link is up but the path beyond it is dead (ISP down behind a live modem) | The probe pings have to time out: every 10 s, two failures in a row | **20–30 s** |
+| The link came back | Waiting on DHCP to re-bind before the probe route can resolve again | **~36 s** |
+
+Both numbers come from a MikroTik Chateau LTE6 failing over from wired Ethernet
+to LTE and back.
+
+The second row is the case this design exists for. A next-hop check would sit
+there indefinitely, satisfied that the modem still answers.
+
+Give every uplink its own probe address. Two uplinks sharing one address would
+fight over the same probe route. The tool rejects that at validation time.
+
+### What failover does and does not do
+
+Failover here is fast, not invisible. Each uplink has its own public address, so
+open connections through a dead uplink break. New connections use the live one.
+Expect a gap of under a minute, then normal service.
+
+Surviving the switch without dropping connections needs an overlay tunnel that
+keeps one address across both uplinks. This tool does not set that up.
+
+### Two details that matter
+
+**Resolvers are static.** The uplinks are configured with `use-peer-dns=no`, and
+the router uses the servers in `lan.dns.servers`. If it kept the resolvers its
+ISP handed out, then after a failover it would still point at servers it can no
+longer reach. Routing would work, every lookup would time out, and it would look
+like the failover had failed.
+
+**The tool owns the default routes.** Every uplink is created with
+`add-default-route=no`, so nothing competes with the failover routes.
+
+### A limit worth knowing
+
+The probe route pins the gateway that was learned when the config was applied.
+If a DHCP or PPPoE uplink comes back with a *different* gateway than it had
+before, that pinned route is stale and the uplink will not recover on its own.
+
+Re-applying fixes it, and applying is idempotent, so a scheduled re-apply
+covers this. It has not bitten in testing, where the returning link kept its
+lease, but it is real. A netwatch script that rewrote the gateway would close
+the gap at the cost of keeping imperative state outside the config file.
+
+### Changing the LAN address safely
+
+Moving `lan.address` cuts the session applying the change. The tool adds before
+it removes, so this takes two runs and never leaves the device unreachable:
+
+1. Run over the old address. The new address is added; the old one stays.
+2. Reconnect at the new address and run again. The old address is removed.
 
 ## Multi-Device Management
 
@@ -472,6 +588,7 @@ network-config-as-code/
 ├── lib/                         # Core library modules
 │   ├── index.js                 # Public API exports
 │   ├── configure.js             # Main configureMikroTik entry point
+│   ├── router.js                # Router role: multi-WAN failover, NAT, DHCP
 │   ├── capsman.js               # CAPsMAN controller/CAP functions
 │   ├── backup.js                # Device backup functionality
 │   ├── access-list.js           # WAP locking via access-list rules
@@ -487,6 +604,7 @@ network-config-as-code/
 │   └── wait-for-device.js       # Wait for device after reboot
 ├── config.yaml                  # Single device config (gitignored)
 ├── config.example.yaml          # Example single device config
+├── router.example.yaml          # Example router config (multi-WAN failover)
 ├── multiple-devices.yaml        # Multi-device config (gitignored)
 ├── multiple-devices.example.yaml # Example multi-device config
 ├── configure-device.sh          # Automated setup script

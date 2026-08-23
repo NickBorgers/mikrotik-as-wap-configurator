@@ -25,6 +25,7 @@ COPY backup-multiple-devices.js ./
 COPY mikrotik-no-vlan-filtering.js ./
 COPY lib ./lib
 COPY config.example.yaml ./
+COPY router.example.yaml ./
 COPY multiple-devices.example.yaml ./
 COPY diag ./diag
 

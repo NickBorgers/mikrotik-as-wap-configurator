@@ -17,6 +17,7 @@ COMMANDS:
   apply-multiple     Apply multi-device configuration
   example            Output example single-device config.yaml
   example-multiple   Output example multiple-devices.yaml
+  example-router     Output example router.yaml (multi-WAN failover)
   help               Show this help message
 
 SINGLE-DEVICE EXAMPLES:
@@ -73,6 +74,11 @@ show_example() {
     cat /app/config.example.yaml
 }
 
+# Function to show example router config
+show_example_router() {
+    cat /app/router.example.yaml
+}
+
 # Function to show example multi-device config
 show_example_multiple() {
     cat /app/multiple-devices.example.yaml
@@ -88,6 +94,10 @@ case "${1:-apply}" in
         show_example
         exit 0
         ;;
+    example-router)
+        show_example_router
+        ;;
+
     example-multiple)
         show_example_multiple
         exit 0

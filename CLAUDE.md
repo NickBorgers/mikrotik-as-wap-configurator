@@ -17,6 +17,8 @@
 - `apply-multiple-devices.js` - CLI tool for multi-device configuration
 - `backup-multiple-devices.js` - CLI tool for multi-device backup
 - `lib/access-list.js` - WAP locking via access-list rules
+- `lib/router.js` - Router role: multi-WAN failover, NAT, DHCP server, DNS, firewall
+- `router.example.yaml` - Example router configuration (multi-WAN failover)
 - `config.yaml` - Active device configuration (gitignored, contains credentials)
 - `config.example.yaml` - Example for documentation and Docker image
 - `multiple-devices.yaml` - Multi-device configuration file (gitignored, contains credentials)
@@ -277,6 +279,91 @@ const BAND_TO_INTERFACE = {
   /interface/wifi/access-list add mac-address="..." interface=<other-ap-interface> action=reject comment="hostname - reject (locked to ap)"
   ```
 - Debug: `/interface/wifi/access-list print detail` on controller
+
+**Router Role: Multi-WAN Failover (Added v6.1.0)**
+- Fourth role alongside `standalone`, `controller`, `cap`. The device is the gateway, not an AP.
+- The AP roles strip router functions on purpose (`lib/configure.js` removes DHCP servers, NAT, static bridge IPs, DNS). The router role keeps them. Never mix the two on one device.
+- Implemented in `lib/router.js`; dispatched from `lib/configure.js`.
+- Verified on the Chateau LTE6 (`D53G-5HacD2HnD&EG06-A`, RouterOS 7.18.2, 5 ether ports + lte1).
+- Config shape:
+  ```yaml
+  role: router
+  lan:
+    address: 192.168.80.1/24
+    ports: [ether2, ether3, ether4, ether5]
+    dhcpServer: {pool: 192.168.80.100-192.168.80.200, leaseTime: 12h}
+    dns: {servers: [1.1.1.1, 8.8.8.8], allowRemoteRequests: true}
+  wan:
+    - {name: primary, interface: ether1, type: dhcp, distance: 1, probe: 8.8.8.8}
+    - {name: backup, interface: lte1, type: lte, apn: fast.t-mobile.com, distance: 2, probe: 1.1.1.1}
+  ```
+- WAN types: `dhcp`, `static`, `pppoe`, `lte`.
+
+**Recursive-Route Failover (Why, Not Just What)**
+- Each uplink gets a probe route (`dst-address=<probe>/32 gateway=<gw> scope=10`) plus a default route whose gateway IS the probe address (`gateway=<probe> target-scope=11 distance=<n> check-gateway=ping`).
+- RouterOS resolves the default route recursively through the probe route.
+- This detects a dead ISP behind a live modem. A modem that lost its uplink still answers ARP/ping on its LAN side, so plain `check-gateway=ping` on the next hop never notices.
+- TWO detection paths, very different speeds. Measured on the Chateau LTE6 (wired <-> LTE):
+  - Link DOWN (cable pulled / port disabled): the probe route's next hop stops resolving, so the default route deactivates immediately. **1.2s**. No ping timeout involved.
+  - Link UP but path beyond it dead (ISP down behind live modem): must wait for probe pings to fail. **20-30s** (every 10s, 2 consecutive failures). This is the case the recursive design exists for.
+  - Failback after the link returns: **~36s**, dominated by DHCP re-binding before the probe route can resolve.
+- Do not quote a single number. Say which failure mode.
+- STALE GATEWAY LIMIT: the probe route pins the gateway learned at apply time. If a dhcp/pppoe uplink returns with a DIFFERENT gateway, the pinned route is stale and that uplink will not recover until a re-apply. Apply is idempotent, so a scheduled re-apply covers it.
+- Failover is fast, NOT seamless. Each uplink has its own public IP, so open connections break. Only an overlay tunnel would keep them.
+- Every uplink is created with `add-default-route=no` so nothing competes with these routes.
+- Every uplink gets `use-peer-dns=no` and the router uses `lan.dns.servers`. Keeping ISP resolvers means that after failover, routing works but every lookup times out - which reads as a failed failover and is very hard to diagnose.
+- Each uplink needs its OWN probe address. Two uplinks sharing one probe fight over the same probe route. Validation rejects this.
+
+**Router Role: Interface Lists and Comment Conventions**
+- Maintains the `WAN` and `LAN` interface lists that RouterOS defconf already uses. One NAT rule (`out-interface-list=WAN`) and one firewall rule cover every uplink.
+- The `WAN` list member comment is the AUTHORITATIVE record: `wan:<name> type=... distance=... probe=... [apn=...]`.
+- Why: routes only exist while a link is up. Reading settings back from routes alone drops an unplugged uplink from the backup. The list member is always present.
+- Other comments: routes `wan:<name> probe` / `wan:<name> default`, NAT `router:masquerade`, filter `router:<purpose>`, DHCP/pool/address `router:lan`.
+- Backup detects the role via the `router:masquerade` NAT rule, not via routes, for the same reason.
+- RouterOS `print detail` renders comments as `;;; <comment>` lines, NOT as `comment="..."`. Parse with `recordComment()` in `lib/router.js`. Getting this wrong silently returns nothing.
+- `/ip dns print` wraps a multi-server list onto unlabelled continuation lines. Collect lines until the next `label:`.
+
+**Router Role: Lockout Safety**
+- Changing `lan.address` cuts the SSH session doing the work. This repo already has a lockout history (VLAN filtering, 3 times).
+- `addLanAddress()` runs before the DHCP server (which needs the address to exist). `removeStaleLanAddresses()` runs last and REFUSES to remove the address whose subnet contains `config.host`.
+- Result: run 1 over the old address leaves both addresses live. Run 2 over the new address removes the old one. Never a moment with no reachable address.
+- Firewall order is deliberate: accept established, drop invalid, accept ICMP, accept `in-interface-list=LAN`, and only THEN drop `in-interface-list=!LAN`. The drop rule is skipped entirely if the LAN list cannot be verified to contain `bridge`.
+- Fasttrack is OFF by default (`lan.fasttrack: true` to enable). Fasttracked flows skip connection tracking, which slows how fast stale sessions clear after a failover.
+
+**LTE Notes (Chateau LTE6 / EG06-A)**
+- `/interface lte monitor lte1 once` showing `status: connected` only means the modem attached to the tower. It does NOT mean the data session has an IP.
+- If there is no address on lte1 and no default route, the APN is wrong. Check `/ip address print where interface=lte1`.
+- Verified working APN on a Google Fi SIM: `fast.t-mobile.com`. `h2g2` did NOT work, despite being the commonly cited Google Fi APN.
+- The role creates a per-uplink APN profile named `apn-<wan-name>` rather than editing the shared `default` profile.
+- Omit `apn` in config to set `use-network-apn=yes` and let the network supply it.
+
+**WiFi Package: wifi-qcom Only (and the Chateau migration)**
+- `detectWifiPackage()` returns `wifi-qcom` or null. All WiFi code uses `/interface/wifi`.
+- The Chateau LTE6 SHIPS the legacy `wireless` package (wlan1/wlan2, `/interface wireless`). That is not supported.
+- The test device was migrated to `wifi-qcom-ac` (IPQ4019 supports it). Procedure, in this order:
+  1. Free space first. Only ~1.1MB was free; the npk is 2.7MB. `/system package uninstall wireless` then reboot frees ~1.9MB.
+  2. Upload `wifi-qcom-ac-<ver>-arm.npk` via SFTP (ssh2 `sftp.fastPut`; MikroTik supports the SFTP subsystem).
+  3. Reboot again to install.
+- Get the npk from `https://download.mikrotik.com/routeros/<ver>/all_packages-arm-<ver>.zip`. The download truncates often - resume with `curl -C -` in a retry loop and check the final byte count.
+- `wifi-qcom-ac` contains the substring `wifi-qcom`, so `detectWifiPackage()` accepts it unchanged.
+- Router config survived both reboots intact. Take `/export file=...` first anyway.
+
+**WiFi Band Tokens Must Be Detected, Not Assumed**
+- `channel.band=2ghz-ax` / `5ghz-ax` was hardcoded. It FAILS on any radio older than 802.11ax.
+- `detectBandToken()` in `lib/wifi-config.js` reads `/interface/wifi/radio print detail` and picks the best supported token. Preference: `2ghz-ax > n > g > b`, `5ghz-ax > ac > n > a`. Falls back to `-ax`.
+- IPQ4019 advertises `2ghz-g,2ghz-n` and `5ghz-a,5ghz-n,5ghz-ac` -> resolves to `2ghz-n` and `5ghz-ac`.
+
+**RouterOS print detail Parsing Traps (all cost real debugging time)**
+- Comments render as `;;; <comment>` lines, NOT `comment="..."`. Terse output differs from detail output.
+- `country` prints UNQUOTED despite containing a space: `.country=United States`. A quoted-only regex silently returns nothing. Use `parseCountry()` in `lib/backup.js`.
+- Multi-value fields wrap onto unlabelled continuation lines (`/ip dns print` servers, radio `bands=`).
+- Record splitting must require the index at the left margin (`\n(?=\s{0,3}\d+\s)`). A looser `\s*` also matches the last line of a wrapped numeric list such as `2g-channels=...,\n      2472`, cutting records in half.
+- Prefer scanning a whole record for a pattern over parsing exact field boundaries when the field can wrap.
+
+**Untagged SSIDs (router role)**
+- `configureWifiInterface()` omits `datapath.vlan-id` when `vlan` is undefined. No datapath object is created either.
+- `lib/backup.js` no longer requires a datapath to record an SSID, and omits `vlan` for untagged ones.
+- Validation: `vlan` is optional only when `role: router`.
 
 ### MikroTik RouterOS v7 WiFi Quirks
 

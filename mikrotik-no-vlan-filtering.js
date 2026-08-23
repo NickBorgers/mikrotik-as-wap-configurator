@@ -25,6 +25,7 @@ const lib = require('./lib');
 // Re-export all public APIs for backward compatibility
 module.exports = {
   configureMikroTik: lib.configureMikroTik,
+  configureRouter: lib.configureRouter,
   configureController: lib.configureController,
   configureCap: lib.configureCap,
   configureCapInterfacesOnController: lib.configureCapInterfacesOnController,

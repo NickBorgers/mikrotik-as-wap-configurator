@@ -1,5 +1,175 @@
 # Changelog
 
+## [6.1.0] - 2026-08-23 - Router Role with Multi-WAN Failover
+
+### Added — `role: router`
+
+A fourth role, alongside `standalone`, `controller` and `cap`. Those three roles
+configure access points and deliberately strip router functions. This one keeps
+them: the device is the gateway.
+
+It was built for the MikroTik Chateau LTE6 (`D53G-5HacD2HnD&EG06-A`), which
+pairs five Ethernet ports with a built-in LTE modem, and was verified on that
+hardware running RouterOS 7.18.2.
+
+```yaml
+role: router
+
+lan:
+  address: 192.168.80.1/24
+  ports: [ether2, ether3, ether4, ether5]
+  dhcpServer:
+    pool: 192.168.80.100-192.168.80.200
+    leaseTime: 12h
+  dns:
+    servers: [1.1.1.1, 8.8.8.8]
+    allowRemoteRequests: true
+
+wan:
+  - name: primary
+    interface: ether1
+    type: dhcp          # dhcp | static | pppoe | lte
+    distance: 1         # lower wins
+    probe: 8.8.8.8
+  - name: backup
+    interface: lte1
+    type: lte
+    apn: fast.t-mobile.com
+    distance: 2
+    probe: 1.1.1.1      # must differ from every other probe
+```
+
+The role configures the LAN bridge, a DHCP server, a DNS cache, masquerade NAT,
+an ordered firewall, and the uplinks with failover between them.
+
+### Failover design
+
+Each uplink gets a probe route pinning one address to that uplink, plus a
+default route whose gateway is that probe address. RouterOS resolves the default
+route recursively through the probe route, and `check-gateway=ping` tests the
+whole path rather than just the first hop.
+
+This catches the case a next-hop check misses: a modem that has lost its own
+uplink but still answers pings on its LAN side.
+
+Measured on a Chateau LTE6 failing over from wired Ethernet to LTE and back:
+
+| What broke | Mechanism | Measured |
+|---|---|---|
+| Link down (cable pulled) | Probe route's next hop stops resolving; default route drops out at once | 1.2 s |
+| Link up, path beyond dead | Probe pings time out: every 10 s, two consecutive failures | 20–30 s |
+| Link restored | DHCP re-binds before the probe route resolves again | ~36 s |
+
+Failover is fast, not invisible. Each uplink has its own public address, so open
+connections through a dead uplink break and new ones use the live uplink.
+
+Known limit: the probe route pins the gateway learned at apply time. A dhcp or
+pppoe uplink that returns with a different gateway leaves that route stale, and
+the uplink will not recover until a re-apply. Applying is idempotent, so a
+scheduled re-apply covers this.
+
+Two settings exist to keep failover honest, and both are applied automatically:
+
+- Every uplink is created with `add-default-route=no`, so nothing competes with
+  the failover routes.
+- Every uplink is created with `use-peer-dns=no` and the router uses the
+  resolvers from `lan.dns.servers`. Keeping ISP-supplied resolvers would leave
+  the router pointing at unreachable servers after a failover — routing works,
+  every lookup times out, and it reads as a failed failover.
+
+### Interface lists
+
+The role maintains the `WAN` and `LAN` interface lists that RouterOS default
+configs already use, so one NAT rule and one firewall rule cover every uplink
+however many there are.
+
+The `WAN` list member comment is the authoritative record of each uplink's
+settings, in the form `wan:<name> type=... distance=... probe=...`. Routes only
+exist while a link is up, so reading settings back from routes alone would drop
+an unplugged uplink from the backup. The list member is always present.
+
+### Lockout safety
+
+Changing `lan.address` cuts the session applying the change. The role adds the
+new address before removing the old one, and refuses to remove the address
+carrying the current session. So the first run leaves both addresses in place,
+and a second run made over the new address clears the old one. There is never a
+moment when the device has no reachable address.
+
+### Idempotent re-apply
+
+The DHCP server, its pool and its network entry are updated in place rather
+than removed and re-added. Removing a DHCP server discards its lease table, so
+the earlier approach would have dropped every lease on a second apply. Verified
+on hardware: a seeded lease survives a re-apply.
+
+### Fixed — WiFi band token was hardcoded to 802.11ax
+
+`lib/configure.js` set `channel.band=2ghz-ax` / `5ghz-ax` unconditionally. On a
+radio that predates 802.11ax the command fails outright. New
+`detectBandToken()` in `lib/wifi-config.js` reads the radio's advertised bands
+and picks the best it supports (`2ghz-ax` > `n` > `g` > `b`; `5ghz-ax` > `ac` >
+`n` > `a`), falling back to the `-ax` token so existing ax hardware behaves
+exactly as before.
+
+Verified on an IPQ4019 radio, which advertises `2ghz-g,2ghz-n` and
+`5ghz-a,5ghz-n,5ghz-ac` and is now configured as `2ghz-n` and `5ghz-ac`.
+
+### Fixed — `country` was never read back
+
+RouterOS prints this value unquoted even though it contains a space
+(`.country=United States`). The backup matched a quoted form only, so the
+country silently never round-tripped on any role. `parseCountry()` in
+`lib/backup.js` now accepts both forms.
+
+### Fixed — untagged SSIDs were dropped from backups
+
+The SSID reader required a datapath with a VLAN, so an SSID with no `vlan` was
+skipped entirely. Untagged SSIDs are now read back, and `vlan` is omitted from
+the result rather than emitted as null. The empty `wifi.roaming` placeholder is
+no longer written either; it was not valid input.
+
+### Fixed — RouterOS detail records split on wrapped numeric lists
+
+Record splitting used `\n(?=\s*\d+\s)`, which also matches the final line of a
+wrapped numeric list such as `2g-channels=...,\n      2472`. That silently cut
+records in half and made band detection return nothing. Both splitters now
+require the index to sit at the left margin.
+
+### Backup
+
+`backupMikroTikConfig()` detects a router by its `router:masquerade` NAT rule and
+reads back `lan` and `wan`, setting `role: router` so a backup re-applies
+cleanly. Verified as an exact round-trip on hardware, including an uplink whose
+cable was unplugged.
+
+### Validation
+
+`apply-config.js` rejects, before touching the device:
+
+- a missing or malformed `lan.address`
+- an empty `wan` list, or an uplink with no interface or an unknown type
+- a `static` uplink with no address or no gateway
+- two uplinks sharing a distance
+- two uplinks sharing a probe address, which would silently break the recursive
+  lookup
+- an interface listed as both a WAN and a LAN port
+
+`ssids` are optional for this role, and so is each SSID's `vlan`: a router owns
+an untagged LAN, unlike the AP roles that tag for an upstream switch.
+
+### Files
+- `lib/router.js` — new; the role, its helpers, WiFi setup and its backup reader
+- `lib/wifi-config.js` — `detectBandToken()`; `configureWifiInterface()` accepts an undefined vlan
+- `lib/configure.js` — dispatches `role: router`
+- `lib/backup.js` — router backup reader, `parseCountry()`, untagged-SSID support
+- `lib/index.js`, `mikrotik-no-vlan-filtering.js` — export `configureRouter`
+- `apply-config.js` — router validation and dispatch
+- `apply-multiple-devices.js` — passes `lan`/`wan` through, deploys routers alongside standalone devices
+- `router.example.yaml` — new, fully commented
+- `README.md`, `Dockerfile`, `docker-entrypoint.sh` (`example-router`) — docs and packaging
+- `package.json` — version 6.1.0
+
 ## [6.0.0] - 2026-05-01 - Fleet-Wide Device Blocking
 
 ### Added — `blockedDevices` (top-level)
