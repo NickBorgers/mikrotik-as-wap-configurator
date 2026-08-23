@@ -1,5 +1,127 @@
 # Changelog
 
+## [6.1.2] - 2026-08-23 - Command Injection and Lockout Fixes
+
+Fixes fourteen findings from a second, independent adversarial review (Codex)
+of the router role. Two were Critical and six High. **Anyone running v6.1.0 or
+v6.1.1 with `role: router` should upgrade.**
+
+### Security — command injection via configuration values (Critical)
+
+Every value from a YAML config was interpolated raw into RouterOS CLI command
+strings. `escapeMikroTik()` existed in `lib/utils.js` but was not imported or
+used anywhere in `lib/router.js`.
+
+This had two consequences. The mundane one: a legitimate value containing a
+quote or a dollar sign — an ISP PPPoE password is the obvious case — produced a
+malformed command that failed or configured the wrong object. The serious one:
+a crafted value could close the quoted string and append further commands,
+which RouterOS runs with the SSH account's full privileges.
+
+```
+# before, with password: pa"ss;word
+/interface pppoe-client add ... password="pa"ss;word" add-default-route=no
+```
+
+New `lib/routeros-args.js` provides one encoder used everywhere. It draws the
+distinction that matters: quoted arguments are escaped with `q()`, while
+unquoted ones (interface names, addresses, durations, distances) cannot be
+rescued by escaping and are instead checked against strict patterns that
+**throw** on anything unexpected. A bad value now stops the apply rather than
+being silently rewritten into something else.
+
+Applies to `lib/wifi-config.js` too, which the AP roles share.
+
+### Lockout — cleanup ran even when the new address was never added (Critical)
+
+`addLanAddress()` returned `false` on failure and `configureRouter()` ignored
+it, then ran `removeStaleLanAddresses()` anyway. Cleanup now runs only when the
+desired address is confirmed present on the device, read back after the fact.
+
+### Lockout — the firewall drop rule trusted an unverified accept rule (High)
+
+Replacement rules are added with `execWithWarning()`, which logs failures and
+continues. A failed `router:input-lan` accept therefore did not stop the
+subsequent WAN drop rule from being added, and the LAN-list check proved only
+that `bridge` was a list member. The drop rule is now added only after the
+accept rule is confirmed to exist; otherwise it is skipped and the router is
+left open on its uplinks rather than unreachable.
+
+### Ownership — cleanup deleted addresses it did not own (High)
+
+`removeStaleLanAddresses()` removed every non-desired static address on the
+bridge. A hand-added secondary or recovery address was silently deleted,
+contradicting the comment-ownership model used everywhere else. It now removes
+only addresses commented `router:lan` or the factory `defconf` address it
+replaces. Static WAN configuration likewise removed every non-dynamic address
+on the interface, and is now scoped to its own `wan:<name>` comment.
+
+### Availability — applying during an outage made the outage worse (High)
+
+All managed routes were removed up front, then recreated only for gateways
+resolvable in a single read. An uplink that was down at apply time lost its
+routes with nothing to put back. Gateways are now resolved before anything is
+removed, each uplink's routes are replaced independently, a down uplink keeps
+what it had, and an apply where no uplink resolves leaves the route table
+untouched rather than emptying it.
+
+### Correctness — an SSID could not move from tagged to untagged (High)
+
+RouterOS `set` leaves unspecified properties unchanged, so omitting the VLAN
+clause left the previous `datapath.vlan-id` in place. Untagged SSIDs now
+explicitly unset it. Because that syntax is not exercised on every RouterOS
+build and this code path configures every SSID for every role, a rejection
+falls back to the previous behaviour with a warning rather than failing the
+apply.
+
+### Validation — checks only looked at what the user typed (High/Medium)
+
+Distances and probes are filled in by `normalizeWans()`, but validation
+inspected only explicit values. An omitted distance colliding with an explicit
+one passed, as did the common case of a default probe of `8.8.8.8` alongside
+`lan.dns.servers: [8.8.8.8]`. Validation now runs against the normalized list.
+
+Also added: duplicate uplink names are rejected (names key route comments,
+PPPoE client names, APN profile names and the backup map, so a collision made
+one uplink overwrite another's objects); `CIDR_RE` checked shape only, so
+`999.999.999.999/99` passed; and `lan.ports`, `lan.dns.servers`,
+`dhcpServer.pool` and `dhcpServer.leaseTime` are now type- and
+format-checked.
+
+### Reporting — apply claimed success regardless of outcome (Medium)
+
+Phases log warnings and continue, so an apply could report "Complete" with no
+default route, no NAT, no DHCP and no LAN address. `verifyRouterState()` now
+checks the LAN address, a managed default route, the masquerade rule, the
+management accept rule and the DHCP server, and throws listing whatever is
+missing.
+
+### Backup — PPPoE passwords were silently dropped (Medium)
+
+The password was written during apply but never read back, so applying a
+generated backup reset the uplink with an empty password. It now round-trips,
+and if it cannot be read the backup says so explicitly.
+
+### Tests
+
+`test/router.test.js` grows to 38 assertions, adding command-argument safety
+(quote, dollar sign, semicolon and `[find]` injection attempts against both
+quoted and unquoted positions) and the validation gaps above.
+
+### Not verified on hardware
+
+As with v6.1.1, these are code-verified and unit-tested only. The VLAN unset
+syntax and the new postcondition checks are the two most worth confirming on a
+device.
+
+### Files
+- `lib/routeros-args.js` — new; the one place command arguments are encoded
+- `lib/router.js` — encoding throughout, ownership-scoped cleanup, route
+  reconciliation, postcondition verification, PPPoE password readback
+- `lib/wifi-config.js` — encoding, VLAN unset with fallback
+- `lib/validate-router.js` — validates normalized values, unique names, strict types
+- `test/router.test.js` — 38 assertions
+
 ## [6.1.1] - 2026-08-23 - Router Role Review Fixes
 
 Fixes from an independent adversarial review of the v6.1.0 router role. All
