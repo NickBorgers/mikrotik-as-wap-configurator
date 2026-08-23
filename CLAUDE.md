@@ -17,6 +17,8 @@
 - `apply-multiple-devices.js` - CLI tool for multi-device configuration
 - `backup-multiple-devices.js` - CLI tool for multi-device backup
 - `lib/access-list.js` - WAP locking via access-list rules
+- `lib/router.js` - Router role: multi-WAN failover, NAT, DHCP server, DNS, firewall
+- `router.example.yaml` - Example router configuration (multi-WAN failover)
 - `config.yaml` - Active device configuration (gitignored, contains credentials)
 - `config.example.yaml` - Example for documentation and Docker image
 - `multiple-devices.yaml` - Multi-device configuration file (gitignored, contains credentials)
@@ -277,6 +279,64 @@ const BAND_TO_INTERFACE = {
   /interface/wifi/access-list add mac-address="..." interface=<other-ap-interface> action=reject comment="hostname - reject (locked to ap)"
   ```
 - Debug: `/interface/wifi/access-list print detail` on controller
+
+**Router Role: Multi-WAN Failover (Added v6.1.0)**
+- Fourth role alongside `standalone`, `controller`, `cap`. The device is the gateway, not an AP.
+- The AP roles strip router functions on purpose (`lib/configure.js` removes DHCP servers, NAT, static bridge IPs, DNS). The router role keeps them. Never mix the two on one device.
+- Implemented in `lib/router.js`; dispatched from `lib/configure.js`.
+- Verified on the Chateau LTE6 (`D53G-5HacD2HnD&EG06-A`, RouterOS 7.18.2, 5 ether ports + lte1).
+- Config shape:
+  ```yaml
+  role: router
+  lan:
+    address: 192.168.80.1/24
+    ports: [ether2, ether3, ether4, ether5]
+    dhcpServer: {pool: 192.168.80.100-192.168.80.200, leaseTime: 12h}
+    dns: {servers: [1.1.1.1, 8.8.8.8], allowRemoteRequests: true}
+  wan:
+    - {name: primary, interface: ether1, type: dhcp, distance: 1, probe: 8.8.8.8}
+    - {name: backup, interface: lte1, type: lte, apn: fast.t-mobile.com, distance: 2, probe: 1.1.1.1}
+  ```
+- WAN types: `dhcp`, `static`, `pppoe`, `lte`.
+
+**Recursive-Route Failover (Why, Not Just What)**
+- Each uplink gets a probe route (`dst-address=<probe>/32 gateway=<gw> scope=10`) plus a default route whose gateway IS the probe address (`gateway=<probe> target-scope=11 distance=<n> check-gateway=ping`).
+- RouterOS resolves the default route recursively through the probe route.
+- This detects a dead ISP behind a live modem. A modem that lost its uplink still answers ARP/ping on its LAN side, so plain `check-gateway=ping` on the next hop never notices.
+- Measured detection on hardware: 20-30s (RouterOS pings every 10s, needs 2 consecutive failures). Do not claim 5-15s.
+- Failover is fast, NOT seamless. Each uplink has its own public IP, so open connections break. Only an overlay tunnel would keep them.
+- Every uplink is created with `add-default-route=no` so nothing competes with these routes.
+- Every uplink gets `use-peer-dns=no` and the router uses `lan.dns.servers`. Keeping ISP resolvers means that after failover, routing works but every lookup times out - which reads as a failed failover and is very hard to diagnose.
+- Each uplink needs its OWN probe address. Two uplinks sharing one probe fight over the same probe route. Validation rejects this.
+
+**Router Role: Interface Lists and Comment Conventions**
+- Maintains the `WAN` and `LAN` interface lists that RouterOS defconf already uses. One NAT rule (`out-interface-list=WAN`) and one firewall rule cover every uplink.
+- The `WAN` list member comment is the AUTHORITATIVE record: `wan:<name> type=... distance=... probe=... [apn=...]`.
+- Why: routes only exist while a link is up. Reading settings back from routes alone drops an unplugged uplink from the backup. The list member is always present.
+- Other comments: routes `wan:<name> probe` / `wan:<name> default`, NAT `router:masquerade`, filter `router:<purpose>`, DHCP/pool/address `router:lan`.
+- Backup detects the role via the `router:masquerade` NAT rule, not via routes, for the same reason.
+- RouterOS `print detail` renders comments as `;;; <comment>` lines, NOT as `comment="..."`. Parse with `recordComment()` in `lib/router.js`. Getting this wrong silently returns nothing.
+- `/ip dns print` wraps a multi-server list onto unlabelled continuation lines. Collect lines until the next `label:`.
+
+**Router Role: Lockout Safety**
+- Changing `lan.address` cuts the SSH session doing the work. This repo already has a lockout history (VLAN filtering, 3 times).
+- `addLanAddress()` runs before the DHCP server (which needs the address to exist). `removeStaleLanAddresses()` runs last and REFUSES to remove the address whose subnet contains `config.host`.
+- Result: run 1 over the old address leaves both addresses live. Run 2 over the new address removes the old one. Never a moment with no reachable address.
+- Firewall order is deliberate: accept established, drop invalid, accept ICMP, accept `in-interface-list=LAN`, and only THEN drop `in-interface-list=!LAN`. The drop rule is skipped entirely if the LAN list cannot be verified to contain `bridge`.
+- Fasttrack is OFF by default (`lan.fasttrack: true` to enable). Fasttracked flows skip connection tracking, which slows how fast stale sessions clear after a failover.
+
+**LTE Notes (Chateau LTE6 / EG06-A)**
+- `/interface lte monitor lte1 once` showing `status: connected` only means the modem attached to the tower. It does NOT mean the data session has an IP.
+- If there is no address on lte1 and no default route, the APN is wrong. Check `/ip address print where interface=lte1`.
+- Verified working APN on a Google Fi SIM: `fast.t-mobile.com`. `h2g2` did NOT work, despite being the commonly cited Google Fi APN.
+- The role creates a per-uplink APN profile named `apn-<wan-name>` rather than editing the shared `default` profile.
+- Omit `apn` in config to set `use-network-apn=yes` and let the network supply it.
+
+**WiFi Package: This Repo Targets wifi-qcom Only**
+- `detectWifiPackage()` returns `wifi-qcom` or null. The whole WiFi codebase uses `/interface/wifi`.
+- The Chateau LTE6 ships the LEGACY `wireless` package instead: interfaces are `wlan1`/`wlan2` and commands live under `/interface wireless`, with `/interface wireless security-profiles`.
+- So router-role WiFi does NOT work on this device today. Routing, NAT, DHCP, DNS and failover all do.
+- Supporting it needs either a separate `wireless`-package code path, or installing `wifi-qcom-ac` on the device (IPQ4019 supports it) and rebooting.
 
 ### MikroTik RouterOS v7 WiFi Quirks
 

@@ -1,0 +1,148 @@
+# MikroTik Router Configuration Example (role: router)
+#
+# Use this role when the MikroTik is the gateway, not an access point.
+# It keeps NAT, DHCP, DNS and the firewall, and it fails over between
+# two or more uplinks.
+#
+# The other roles in this tool do the opposite. A standalone, controller,
+# or cap device strips router functions, because it sits behind someone
+# else's gateway. Do not mix the two on one device.
+#
+# Apply with:
+#   ./apply-config.js router.yaml
+#
+# Tested on the MikroTik Chateau LTE6 (D53G-5HacD2HnD&EG06-A), which pairs
+# five Ethernet ports with a built-in LTE modem.
+
+device:
+  host: 192.168.88.1        # factory address; change once the LAN moves
+  username: admin
+  password: admin
+
+role: router
+
+# ---------------------------------------------------------------------------
+# LAN
+# ---------------------------------------------------------------------------
+# The router owns this network. It hands out addresses and answers DNS.
+lan:
+  address: 192.168.80.1/24  # router's own address, in CIDR form
+
+  ports:                    # ports that join the LAN bridge
+    - ether2                # never list a WAN port here
+    - ether3
+    - ether4
+    - ether5
+
+  dhcpServer:
+    pool: 192.168.80.100-192.168.80.200
+    leaseTime: 12h
+    # dns: [192.168.80.1]   # what clients are told to use; defaults to the router
+
+  dns:
+    servers:                # the router's own resolvers
+      - 1.1.1.1
+      - 8.8.8.8
+    allowRemoteRequests: true   # let LAN clients resolve through the router
+
+  # Fasttrack makes forwarding faster by letting established flows skip
+  # connection tracking. That also means stale sessions linger longer after a
+  # failover. Off by default. Turn it on if throughput matters more than
+  # failover cleanliness.
+  # fasttrack: true
+
+# ---------------------------------------------------------------------------
+# WAN
+# ---------------------------------------------------------------------------
+# List every uplink. The lowest distance is preferred; the rest are standby.
+#
+# Each uplink needs its own `probe` address. The router pins that address to
+# that uplink and pings it every few seconds. If the pings stop, the uplink is
+# marked down and the next one takes over.
+#
+# Why probe a far-away address instead of the next hop: a cable modem that has
+# lost its own uplink still answers pings on its LAN side. Checking only the
+# next hop would never notice. Checking 8.8.8.8 does.
+wan:
+  - name: primary
+    interface: ether1
+    type: dhcp              # dhcp | static | pppoe | lte
+    distance: 1             # lower wins
+    probe: 8.8.8.8
+
+  - name: backup
+    interface: lte1
+    type: lte
+    distance: 2
+    probe: 1.1.1.1          # must differ from every other probe
+    # apn: fast.t-mobile.com
+    #   Leave apn out to use whatever the network supplies.
+    #   If `/interface lte monitor lte1 once` says connected but the link
+    #   carries no traffic, the APN is usually why. Check the carrier's.
+
+  # A static uplink needs both an address and a gateway:
+  # - name: fiber
+  #   interface: ether5
+  #   type: static
+  #   address: 203.0.113.10/30
+  #   gateway: 203.0.113.9
+  #   distance: 1
+  #   probe: 9.9.9.9
+
+  # A PPPoE uplink dials out over an Ethernet port:
+  # - name: dsl
+  #   interface: ether5
+  #   type: pppoe
+  #   user: myaccount@isp.example
+  #   password: secret
+  #   distance: 3
+  #   probe: 208.67.222.222
+
+# ---------------------------------------------------------------------------
+# WiFi (optional)
+# ---------------------------------------------------------------------------
+# A router with no WiFi is valid. Leave these out and the radios are untouched.
+#
+# SSIDs on a router join the untagged LAN bridge, so `vlan` is optional here.
+# Every other role requires it, because those devices tag traffic for an
+# upstream switch to sort out. This device is the upstream.
+#
+# wifi:
+#   country: United States
+#   2.4GHz:
+#     channel: 1
+#     width: 20mhz
+#   5GHz:
+#     channel: 36
+#     width: 20/40/80mhz
+#
+# ssids:
+#   - ssid: MyNetwork
+#     passphrase: secure-password-here
+#     bands:
+#       - 2.4GHz
+#       - 5GHz
+
+# ---------------------------------------------------------------------------
+# Optional extras
+# ---------------------------------------------------------------------------
+# igmpSnooping: true        # trims multicast flooding (Sonos, Chromecast)
+#
+# syslog:
+#   server: 10.0.0.100
+#   port: 514
+#   topics:
+#     - wireless
+
+# ---------------------------------------------------------------------------
+# Moving the LAN address without locking yourself out
+# ---------------------------------------------------------------------------
+# Changing lan.address cuts the session that is applying the change. The tool
+# handles this by adding before it removes.
+#
+# Run one, over the old address:
+#   the new address goes on, the old one stays, both answer.
+# Run two, over the new address:
+#   the old address is removed and the rest is verified.
+#
+# There is never a moment when the device has no reachable address.

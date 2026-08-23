@@ -4,6 +4,7 @@ const fs = require('fs');
 const yaml = require('js-yaml');
 const { configureMikroTik } = require('./mikrotik-no-vlan-filtering.js');
 const { configureCap, configureController } = require('./lib/capsman');
+const { configureRouter } = require('./lib/router');
 
 function loadConfig(configFile) {
   try {
@@ -16,8 +17,79 @@ function loadConfig(configFile) {
   }
 }
 
+const VALID_WAN_TYPES = ['dhcp', 'static', 'pppoe', 'lte'];
+
+/**
+ * Validate the lan and wan blocks of a router-role configuration.
+ * Returns an array of error strings.
+ */
+function validateRouterConfig(config) {
+  const errors = [];
+  const lan = config.lan || {};
+  const wans = config.wan || [];
+
+  if (!lan.address) {
+    errors.push('Router: missing lan.address (e.g. 192.168.80.1/24)');
+  } else if (!/^\d+\.\d+\.\d+\.\d+\/\d{1,2}$/.test(lan.address)) {
+    errors.push(`Router: lan.address '${lan.address}' is not valid CIDR (e.g. 192.168.80.1/24)`);
+  }
+
+  if (!Array.isArray(wans) || wans.length === 0) {
+    errors.push('Router: wan must be a non-empty list of uplinks');
+    return errors;
+  }
+
+  const probes = new Map();
+  const distances = new Map();
+  const lanPorts = new Set(lan.ports || []);
+
+  wans.forEach((wan, index) => {
+    const label = wan.name || `wan[${index}]`;
+
+    if (!wan.interface) {
+      errors.push(`Router: ${label} is missing interface`);
+    } else if (lanPorts.has(wan.interface)) {
+      errors.push(`Router: ${wan.interface} is listed both as a WAN and in lan.ports - pick one`);
+    }
+
+    const type = wan.type || 'dhcp';
+    if (!VALID_WAN_TYPES.includes(type)) {
+      errors.push(`Router: ${label} has invalid type '${type}' (use ${VALID_WAN_TYPES.join(', ')})`);
+    }
+    if (type === 'static' && !wan.address) {
+      errors.push(`Router: ${label} is type static but has no address`);
+    }
+    if (type === 'static' && !wan.gateway) {
+      errors.push(`Router: ${label} is type static but has no gateway`);
+    }
+
+    if (wan.distance !== undefined) {
+      if (!Number.isInteger(wan.distance) || wan.distance < 1 || wan.distance > 255) {
+        errors.push(`Router: ${label} distance must be a whole number from 1 to 255`);
+      } else if (distances.has(wan.distance)) {
+        errors.push(`Router: ${label} and ${distances.get(wan.distance)} share distance ${wan.distance} - each uplink needs its own`);
+      } else {
+        distances.set(wan.distance, label);
+      }
+    }
+
+    // Two uplinks probing the same address would fight over one probe route,
+    // and the recursive lookup would silently follow whichever won.
+    if (wan.probe) {
+      if (probes.has(wan.probe)) {
+        errors.push(`Router: ${label} and ${probes.get(wan.probe)} both probe ${wan.probe} - each uplink needs its own target`);
+      } else {
+        probes.set(wan.probe, label);
+      }
+    }
+  });
+
+  return errors;
+}
+
 function validateConfig(config) {
   const errors = [];
+  const role = config.role || 'standalone';
 
   if (!config.device) {
     errors.push('Missing device configuration');
@@ -27,8 +99,14 @@ function validateConfig(config) {
     if (!config.device.password) errors.push('Missing device.password');
   }
 
-  // CAP devices don't need SSIDs - they receive them from the controller
-  if (config.role !== 'cap' && (!config.ssids || config.ssids.length === 0)) {
+  if (role === 'router') {
+    errors.push(...validateRouterConfig(config));
+  }
+
+  // CAP devices receive SSIDs from the controller.
+  // Routers may legitimately run with no WiFi at all.
+  const ssidsOptional = role === 'cap' || role === 'router';
+  if (!ssidsOptional && (!config.ssids || config.ssids.length === 0)) {
     errors.push('No SSIDs defined');
   }
 
@@ -39,7 +117,10 @@ function validateConfig(config) {
       if (ssid.passphrase === 'UNKNOWN') {
         errors.push(`SSID ${index} (${ssid.ssid}): passphrase is UNKNOWN - please set a real passphrase. UNKNOWN is used in backups when passphrases cannot be retrieved from devices.`);
       }
-      if (ssid.vlan === undefined) errors.push(`SSID ${index}: missing vlan`);
+      // A router owns its LAN, which is untagged, so vlan is optional there.
+      if (ssid.vlan === undefined && role !== 'router') {
+        errors.push(`SSID ${index}: missing vlan`);
+      }
       if (!ssid.bands || ssid.bands.length === 0) {
         errors.push(`SSID ${index}: missing bands (must specify 2.4GHz, 5GHz, or both)`);
       }
@@ -95,6 +176,9 @@ async function main() {
     managementInterfaces: config.managementInterfaces || ['ether1'],
     disabledInterfaces: config.disabledInterfaces || [],
     igmpSnooping: config.igmpSnooping,  // IGMP snooping on bridge
+    role: config.role,
+    lan: config.lan,    // Router role: LAN address, ports, DHCP server, DNS
+    wan: config.wan,    // Router role: uplinks with failover ordering
     wifi: config.wifi,  // WiFi optimization settings (channel, power, roaming)
     securityProfile: config.security?.profile || 'wpa2-vlan100',
     passphrase: config.security?.passphrase || 'password',
@@ -115,7 +199,17 @@ async function main() {
   });
 
   console.log(`Management interfaces: ${mgmtDisplay.join(', ')}`);
-  if (config.role === 'cap') {
+  if (config.role === 'router') {
+    console.log(`Role: Router (multi-WAN gateway)`);
+    console.log(`LAN: ${config.lan?.address || 'unset'}`);
+    (config.wan || []).forEach(wan => {
+      const dist = wan.distance !== undefined ? wan.distance : '?';
+      console.log(`  - ${wan.name || wan.interface}: ${wan.interface} (${wan.type || 'dhcp'}), distance ${dist}`);
+    });
+    if (config.ssids?.length) {
+      console.log(`SSIDs to configure: ${config.ssids.length}`);
+    }
+  } else if (config.role === 'cap') {
     console.log(`Role: CAP (SSIDs received from controller)`);
   } else if (config.ssids) {
     console.log(`SSIDs to configure: ${config.ssids.length}`);
@@ -131,7 +225,14 @@ async function main() {
   console.log('');
 
   try {
-    if (config.role === 'cap' || config.role === 'controller') {
+    if (config.role === 'router') {
+      await configureRouter({
+        ...config,
+        host: targetIp || config.device.host,
+        username: config.device.username,
+        password: config.device.password
+      });
+    } else if (config.role === 'cap' || config.role === 'controller') {
       // CAP/controller functions expect flat config with host/username/password at root
       const flatConfig = {
         ...config,

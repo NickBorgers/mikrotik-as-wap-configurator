@@ -99,6 +99,9 @@ function validateDeviceConfig(config, index, deploymentSsids) {
         }
       });
     }
+  } else if (role === 'router') {
+    // Routers are validated by apply-config's router rules; SSIDs are optional
+    // and no CAPsMAN ordering applies. Nothing extra to check here.
   } else {
     // Controller and standalone devices need SSIDs
     const ssids = config.ssids || [];
@@ -355,6 +358,8 @@ async function main() {
       managementInterfaces: deviceConfig.managementInterfaces || ['ether1'],
       disabledInterfaces: deviceConfig.disabledInterfaces || [],
       igmpSnooping: deviceConfig.igmpSnooping,
+      lan: deviceConfig.lan,    // Router role: LAN address, ports, DHCP server, DNS
+      wan: deviceConfig.wan,    // Router role: uplinks with failover ordering
       wifi,
       syslog: deploymentSyslog,
       ssids,
@@ -375,7 +380,7 @@ async function main() {
   if (capsmanMode) {
     const controller = devices.find(d => d.role === 'controller');
     const caps = devices.filter(d => d.role === 'cap');
-    const standalones = devices.filter(d => !d.role || d.role === 'standalone');
+    const standalones = devices.filter(d => !d.role || d.role === 'standalone' || d.role === 'router');
 
     // Phase 1: Configure controller
     console.log('=== Phase 1: Configuring CAPsMAN Controller ===\n');
