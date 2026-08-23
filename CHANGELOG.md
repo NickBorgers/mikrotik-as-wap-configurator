@@ -92,6 +92,39 @@ than removed and re-added. Removing a DHCP server discards its lease table, so
 the earlier approach would have dropped every lease on a second apply. Verified
 on hardware: a seeded lease survives a re-apply.
 
+### Fixed — WiFi band token was hardcoded to 802.11ax
+
+`lib/configure.js` set `channel.band=2ghz-ax` / `5ghz-ax` unconditionally. On a
+radio that predates 802.11ax the command fails outright. New
+`detectBandToken()` in `lib/wifi-config.js` reads the radio's advertised bands
+and picks the best it supports (`2ghz-ax` > `n` > `g` > `b`; `5ghz-ax` > `ac` >
+`n` > `a`), falling back to the `-ax` token so existing ax hardware behaves
+exactly as before.
+
+Verified on an IPQ4019 radio, which advertises `2ghz-g,2ghz-n` and
+`5ghz-a,5ghz-n,5ghz-ac` and is now configured as `2ghz-n` and `5ghz-ac`.
+
+### Fixed — `country` was never read back
+
+RouterOS prints this value unquoted even though it contains a space
+(`.country=United States`). The backup matched a quoted form only, so the
+country silently never round-tripped on any role. `parseCountry()` in
+`lib/backup.js` now accepts both forms.
+
+### Fixed — untagged SSIDs were dropped from backups
+
+The SSID reader required a datapath with a VLAN, so an SSID with no `vlan` was
+skipped entirely. Untagged SSIDs are now read back, and `vlan` is omitted from
+the result rather than emitted as null. The empty `wifi.roaming` placeholder is
+no longer written either; it was not valid input.
+
+### Fixed — RouterOS detail records split on wrapped numeric lists
+
+Record splitting used `\n(?=\s*\d+\s)`, which also matches the final line of a
+wrapped numeric list such as `2g-channels=...,\n      2472`. That silently cut
+records in half and made band detection return nothing. Both splitters now
+require the index to sit at the left margin.
+
 ### Backup
 
 `backupMikroTikConfig()` detects a router by its `router:masquerade` NAT rule and
@@ -115,9 +148,10 @@ cable was unplugged.
 an untagged LAN, unlike the AP roles that tag for an upstream switch.
 
 ### Files
-- `lib/router.js` — new; the role, its helpers and its backup reader
+- `lib/router.js` — new; the role, its helpers, WiFi setup and its backup reader
+- `lib/wifi-config.js` — `detectBandToken()`; `configureWifiInterface()` accepts an undefined vlan
 - `lib/configure.js` — dispatches `role: router`
-- `lib/backup.js` — calls the router backup reader
+- `lib/backup.js` — router backup reader, `parseCountry()`, untagged-SSID support
 - `lib/index.js`, `mikrotik-no-vlan-filtering.js` — export `configureRouter`
 - `apply-config.js` — router validation and dispatch
 - `apply-multiple-devices.js` — passes `lan`/`wan` through, deploys routers alongside standalone devices

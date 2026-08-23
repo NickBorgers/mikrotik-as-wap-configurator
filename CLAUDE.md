@@ -332,11 +332,33 @@ const BAND_TO_INTERFACE = {
 - The role creates a per-uplink APN profile named `apn-<wan-name>` rather than editing the shared `default` profile.
 - Omit `apn` in config to set `use-network-apn=yes` and let the network supply it.
 
-**WiFi Package: This Repo Targets wifi-qcom Only**
-- `detectWifiPackage()` returns `wifi-qcom` or null. The whole WiFi codebase uses `/interface/wifi`.
-- The Chateau LTE6 ships the LEGACY `wireless` package instead: interfaces are `wlan1`/`wlan2` and commands live under `/interface wireless`, with `/interface wireless security-profiles`.
-- So router-role WiFi does NOT work on this device today. Routing, NAT, DHCP, DNS and failover all do.
-- Supporting it needs either a separate `wireless`-package code path, or installing `wifi-qcom-ac` on the device (IPQ4019 supports it) and rebooting.
+**WiFi Package: wifi-qcom Only (and the Chateau migration)**
+- `detectWifiPackage()` returns `wifi-qcom` or null. All WiFi code uses `/interface/wifi`.
+- The Chateau LTE6 SHIPS the legacy `wireless` package (wlan1/wlan2, `/interface wireless`). That is not supported.
+- The test device was migrated to `wifi-qcom-ac` (IPQ4019 supports it). Procedure, in this order:
+  1. Free space first. Only ~1.1MB was free; the npk is 2.7MB. `/system package uninstall wireless` then reboot frees ~1.9MB.
+  2. Upload `wifi-qcom-ac-<ver>-arm.npk` via SFTP (ssh2 `sftp.fastPut`; MikroTik supports the SFTP subsystem).
+  3. Reboot again to install.
+- Get the npk from `https://download.mikrotik.com/routeros/<ver>/all_packages-arm-<ver>.zip`. The download truncates often - resume with `curl -C -` in a retry loop and check the final byte count.
+- `wifi-qcom-ac` contains the substring `wifi-qcom`, so `detectWifiPackage()` accepts it unchanged.
+- Router config survived both reboots intact. Take `/export file=...` first anyway.
+
+**WiFi Band Tokens Must Be Detected, Not Assumed**
+- `channel.band=2ghz-ax` / `5ghz-ax` was hardcoded. It FAILS on any radio older than 802.11ax.
+- `detectBandToken()` in `lib/wifi-config.js` reads `/interface/wifi/radio print detail` and picks the best supported token. Preference: `2ghz-ax > n > g > b`, `5ghz-ax > ac > n > a`. Falls back to `-ax`.
+- IPQ4019 advertises `2ghz-g,2ghz-n` and `5ghz-a,5ghz-n,5ghz-ac` -> resolves to `2ghz-n` and `5ghz-ac`.
+
+**RouterOS print detail Parsing Traps (all cost real debugging time)**
+- Comments render as `;;; <comment>` lines, NOT `comment="..."`. Terse output differs from detail output.
+- `country` prints UNQUOTED despite containing a space: `.country=United States`. A quoted-only regex silently returns nothing. Use `parseCountry()` in `lib/backup.js`.
+- Multi-value fields wrap onto unlabelled continuation lines (`/ip dns print` servers, radio `bands=`).
+- Record splitting must require the index at the left margin (`\n(?=\s{0,3}\d+\s)`). A looser `\s*` also matches the last line of a wrapped numeric list such as `2g-channels=...,\n      2472`, cutting records in half.
+- Prefer scanning a whole record for a pattern over parsing exact field boundaries when the field can wrap.
+
+**Untagged SSIDs (router role)**
+- `configureWifiInterface()` omits `datapath.vlan-id` when `vlan` is undefined. No datapath object is created either.
+- `lib/backup.js` no longer requires a datapath to record an SSID, and omits `vlan` for untagged ones.
+- Validation: `vlan` is optional only when `role: router`.
 
 ### MikroTik RouterOS v7 WiFi Quirks
 
