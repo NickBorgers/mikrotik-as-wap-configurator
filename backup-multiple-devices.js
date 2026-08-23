@@ -116,20 +116,31 @@ async function main() {
       successCount++;
 
       console.log(`\n✓ Successfully backed up ${host}`);
-      console.log(`  SSIDs: ${config.ssids.length}`);
+      console.log(`  SSIDs: ${(config.ssids || []).length}`);
 
-      // Format management interfaces for display
-      const mgmtDisplay = config.managementInterfaces.map(iface => {
-        if (typeof iface === 'string') {
-          return iface;
-        } else if (iface.bond) {
-          return `bond (${iface.bond.join('+')})`;
-        }
-        return 'unknown';
-      });
+      // A router has no "management interfaces" - it owns its LAN - so the
+      // backup omits those keys entirely for role: router. Reading them
+      // unconditionally threw, and because that happened after the config had
+      // already been pushed and counted, the catch below added a second,
+      // bogus error entry for the same device.
+      if (config.role === 'router') {
+        console.log(`  Role: router`);
+        console.log(`  LAN: ${config.lan?.address || 'unset'}`);
+        console.log(`  Uplinks: ${(config.wan || []).map(w => `${w.name}(${w.interface})`).join(', ') || 'none'}`);
+      } else {
+        const mgmtDisplay = (config.managementInterfaces || []).map(iface => {
+          if (typeof iface === 'string') {
+            return iface;
+          } else if (iface.bond) {
+            return `bond (${iface.bond.join('+')})`;
+          }
+          return 'unknown';
+        });
 
-      console.log(`  Management interfaces: ${mgmtDisplay.join(', ')}`);
-      console.log(`  Disabled interfaces: ${config.disabledInterfaces.length > 0 ? config.disabledInterfaces.join(', ') : 'none'}`);
+        console.log(`  Management interfaces: ${mgmtDisplay.join(', ') || 'none'}`);
+        const disabled = config.disabledInterfaces || [];
+        console.log(`  Disabled interfaces: ${disabled.length > 0 ? disabled.join(', ') : 'none'}`);
+      }
       if (config.wifi) {
         const features = [];
         if (config.wifi['2.4GHz']) features.push('2.4GHz');

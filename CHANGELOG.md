@@ -1,5 +1,120 @@
 # Changelog
 
+## [6.1.1] - 2026-08-23 - Router Role Review Fixes
+
+Fixes from an independent adversarial review of the v6.1.0 router role. All
+thirteen findings were verified against the code and, where possible, against
+RouterOS output captured from hardware. Two were crashes, one was a lockout
+risk, and one meant an entire class of config went unvalidated.
+
+### Fixed — multi-device backup crashed on any fleet containing a router
+
+`lib/backup.js` deletes `managementInterfaces` and `disabledInterfaces` for
+`role: router` (a router owns its LAN; it has no management interfaces).
+`backup-multiple-devices.js` then read both unconditionally and threw
+`TypeError: Cannot read properties of undefined`.
+
+Worse, the throw happened *after* the config was pushed and counted as a
+success, so the catch block appended a second `_backup_error` entry for the
+same host — the written YAML got a duplicated device and a wrong failure count.
+
+### Fixed — the lockout guard did nothing for FQDN hosts
+
+`removeStaleLanAddresses()` refuses to delete the address carrying the current
+session. It compared `config.host` directly, but that value is routinely an
+FQDN in this project — device identity is derived from it. `ipToInt()` returns
+null for a hostname, so `cidrContains()` returned false, the guard never fired,
+and the tool would delete the address it was connected through.
+
+The host is now resolved to an IPv4 address first. If it cannot be resolved,
+nothing is removed and the situation is reported, rather than guessing.
+
+### Fixed — router configs in a fleet were never validated
+
+`validateRouterConfig()` lived inside `apply-config.js` and was only called
+there. `apply-multiple-devices.js` had a comment claiming routers were
+"validated by apply-config's router rules" — they were not. A router in a
+multi-device deployment reached `configureRouter()` with no checks at all.
+
+Validation now lives in `lib/validate-router.js` and both entry points call it.
+
+### Fixed — a malformed lan.address crashed mid-apply
+
+`configureDhcpServer()` dereferenced `parseCidr(lan.address).address` unguarded.
+Combined with the missing fleet validation above, a router with a
+`lan.dhcpServer` block and a bad `lan.address` threw *after* NAT, the firewall
+and the routes had already been rewritten. It now skips the DHCP server with a
+warning, and validation rejects the combination up front.
+
+### Fixed — a removed uplink resurrected itself
+
+Interface-list rebuild removed only the members named in the *current* config,
+so an uplink deleted from the YAML kept its `WAN` list member forever. Since
+those member comments are the authoritative record for backup, the deleted
+uplink reappeared on the next backup and was re-applied. Members are now
+cleared by comment.
+
+### Fixed — tagged SSIDs backed up without their VLAN
+
+Nothing in this codebase assigns a *named* datapath to an interface;
+`configureWifiInterface()` writes `datapath.bridge=... datapath.vlan-id=N`
+inline. Backup only ever looked for a named datapath, so tagged SSIDs were
+previously skipped entirely, and after the v6.1.0 untagged-SSID change they
+were recorded with `vlan` silently missing.
+
+The VLAN is now read inline off the interface, in both spellings RouterOS
+prints (`datapath.vlan-id=` and the bare `.vlan-id=` continuation).
+
+### Fixed — probe addresses could collide with resolvers
+
+A probe address is pinned to its uplink by a `/32` route with no health check.
+If that uplink is up but the path beyond it is dead, the pin remains and the
+address stops answering. The shipped example used `8.8.8.8` and `1.1.1.1` as
+both probe targets *and* `lan.dns.servers`, so a resolver would be pinned to a
+failing uplink and stall every query that picked it.
+
+Validation now rejects the overlap, and the example uses separate addresses.
+
+### Fixed — more than four uplinks silently shared a probe
+
+`normalizeWans()` fell back to the last default probe once its list of four ran
+out, giving two uplinks the same target. Two `/32` routes on one destination
+with different gateways make the recursive lookup follow whichever won,
+disabling failover for those links. It now throws and asks for explicit probes.
+
+### Fixed — smaller correctness issues
+
+- `addLanAddress()` compared only the host part of the address, so changing
+  `/24` to `/25` read as "already present"; it was also a substring match, so
+  `10.0.0.1/24` matched inside `110.0.0.1/24`. It now compares whole tokens.
+- LAN port discovery matched only `ether\d+`, dropping `sfp`, `sfp-sfpplus`
+  and bond members from backups.
+- `splitDetailRecords()` assumed a `Flags:` header always precedes record 0.
+  RouterOS omits it for object types with no flags — `/ip pool print detail` is
+  one — so record 0 was discarded. It now detects whether a header is present.
+- `lan.dhcpServer.dns` and a PPPoE `user` were written during apply but never
+  read back, violating the project rule that every configurable knob must
+  round-trip.
+- `configureRouterWifi()` created a datapath object that nothing referenced.
+
+### Added — regression tests
+
+`test/router.test.js`, 29 assertions, run by `npm test` and now by CI. Covers
+the address helpers, WAN normalisation, the member-comment round-trip,
+validation, and the RouterOS output parsing — using fixtures captured from
+hardware rather than invented output, since every parsing bug so far came from
+a format that looked plausible but was not what the device prints.
+
+### Files
+- `lib/validate-router.js` — new; shared validation for both entry points
+- `test/router.test.js` — new; regression suite
+- `lib/router.js` — host resolution, probe exhaustion, member cleanup, guards, parsing
+- `lib/backup.js` — inline VLAN readback
+- `backup-multiple-devices.js` — router-aware summary
+- `apply-config.js`, `apply-multiple-devices.js` — use the shared validator
+- `router.example.yaml` — resolvers no longer collide with probe targets
+- `.github/workflows/ci.yml`, `package.json` — run the tests
+
 ## [6.1.0] - 2026-08-23 - Router Role with Multi-WAN Failover
 
 ### Added — `role: router`

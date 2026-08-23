@@ -3,6 +3,7 @@
 const fs = require('fs');
 const yaml = require('js-yaml');
 const { configureMikroTik, configureCapInterfacesOnController, configureLocalCapFallback, configureAccessLists, extractHostname } = require('./mikrotik-no-vlan-filtering.js');
+const { validateRouterConfig } = require('./lib/validate-router');
 
 function loadConfig(configFile) {
   try {
@@ -100,8 +101,9 @@ function validateDeviceConfig(config, index, deploymentSsids) {
       });
     }
   } else if (role === 'router') {
-    // Routers are validated by apply-config's router rules; SSIDs are optional
-    // and no CAPsMAN ordering applies. Nothing extra to check here.
+    // Routers need the same lan/wan checks the single-device path applies.
+    // SSIDs are optional for this role and no CAPsMAN ordering applies.
+    errors.push(...validateRouterConfig(config, `Device ${index} (router)`));
   } else {
     // Controller and standalone devices need SSIDs
     const ssids = config.ssids || [];

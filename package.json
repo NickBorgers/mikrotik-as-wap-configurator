@@ -1,6 +1,6 @@
 {
   "name": "network-config-as-code",
-  "version": "6.1.0",
+  "version": "6.1.1",
   "description": "YAML-based configuration management for MikroTik network devices",
   "main": "mikrotik-safe-configure.js",
   "scripts": {
@@ -8,6 +8,7 @@
     "apply-multiple": "node apply-multiple-devices.js",
     "backup": "node backup-config.js",
     "backup-multiple": "node backup-multiple-devices.js",
+    "test": "node test/router.test.js && node test-identity-feature.js",
     "inspect": "node mikrotik-inspect.js",
     "verify": "node mikrotik-verify.js",
     "wifi-inspect": "node mikrotik-wifi-inspect.js"
