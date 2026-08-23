@@ -50,12 +50,23 @@ route recursively through the probe route, and `check-gateway=ping` tests the
 whole path rather than just the first hop.
 
 This catches the case a next-hop check misses: a modem that has lost its own
-uplink but still answers pings on its LAN side. Measured detection time on
-hardware is 20 to 30 seconds, which matches RouterOS pinging every 10 seconds
-and requiring two consecutive failures.
+uplink but still answers pings on its LAN side.
+
+Measured on a Chateau LTE6 failing over from wired Ethernet to LTE and back:
+
+| What broke | Mechanism | Measured |
+|---|---|---|
+| Link down (cable pulled) | Probe route's next hop stops resolving; default route drops out at once | 1.2 s |
+| Link up, path beyond dead | Probe pings time out: every 10 s, two consecutive failures | 20–30 s |
+| Link restored | DHCP re-binds before the probe route resolves again | ~36 s |
 
 Failover is fast, not invisible. Each uplink has its own public address, so open
 connections through a dead uplink break and new ones use the live uplink.
+
+Known limit: the probe route pins the gateway learned at apply time. A dhcp or
+pppoe uplink that returns with a different gateway leaves that route stale, and
+the uplink will not recover until a re-apply. Applying is idempotent, so a
+scheduled re-apply covers this.
 
 Two settings exist to keep failover honest, and both are applied automatically:
 

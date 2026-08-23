@@ -63,6 +63,11 @@ lan:
 # Why probe a far-away address instead of the next hop: a cable modem that has
 # lost its own uplink still answers pings on its LAN side. Checking only the
 # next hop would never notice. Checking 8.8.8.8 does.
+#
+# Two failures, two speeds (measured on a Chateau LTE6, wired to LTE):
+#   - Link goes down (cable pulled):   ~1 second. The route stops resolving.
+#   - Link up but path dead (ISP out): 20-30 seconds. Pings must time out.
+#   - Link comes back:                 ~36 seconds, waiting on DHCP to re-bind.
 wan:
   - name: primary
     interface: ether1

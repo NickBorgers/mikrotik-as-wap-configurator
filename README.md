@@ -245,13 +245,24 @@ Each uplink gets two routes. A **probe route** pins one address to that uplink.
 A **default route** points at the probe address rather than a real next hop, so
 the router has to resolve it through the probe route.
 
-The router then pings the probe address every 10 seconds. Two failures in a row
-mark that uplink down, and the next one takes over. Detection takes roughly 20
-to 30 seconds.
-
 Probing a real internet address is the point. A cable modem that has lost its
 own uplink still answers pings on its LAN side, so checking only the next hop
 would never notice. Checking `8.8.8.8` does.
+
+Two different failures are detected two different ways, and they are not
+equally fast:
+
+| What broke | How it is caught | Measured |
+|---|---|---|
+| The link went down (cable pulled, port died) | The probe route's next hop stops resolving, so the default route drops out at once | **1.2 s** |
+| The link is up but the path beyond it is dead (ISP down behind a live modem) | The probe pings have to time out: every 10 s, two failures in a row | **20–30 s** |
+| The link came back | Waiting on DHCP to re-bind before the probe route can resolve again | **~36 s** |
+
+Both numbers come from a MikroTik Chateau LTE6 failing over from wired Ethernet
+to LTE and back.
+
+The second row is the case this design exists for. A next-hop check would sit
+there indefinitely, satisfied that the modem still answers.
 
 Give every uplink its own probe address. Two uplinks sharing one address would
 fight over the same probe route. The tool rejects that at validation time.
@@ -275,6 +286,17 @@ like the failover had failed.
 
 **The tool owns the default routes.** Every uplink is created with
 `add-default-route=no`, so nothing competes with the failover routes.
+
+### A limit worth knowing
+
+The probe route pins the gateway that was learned when the config was applied.
+If a DHCP or PPPoE uplink comes back with a *different* gateway than it had
+before, that pinned route is stale and the uplink will not recover on its own.
+
+Re-applying fixes it, and applying is idempotent, so a scheduled re-apply
+covers this. It has not bitten in testing, where the returning link kept its
+lease, but it is real. A netwatch script that rewrote the gateway would close
+the gap at the cost of keeping imperative state outside the config file.
 
 ### Changing the LAN address safely
 

@@ -303,7 +303,12 @@ const BAND_TO_INTERFACE = {
 - Each uplink gets a probe route (`dst-address=<probe>/32 gateway=<gw> scope=10`) plus a default route whose gateway IS the probe address (`gateway=<probe> target-scope=11 distance=<n> check-gateway=ping`).
 - RouterOS resolves the default route recursively through the probe route.
 - This detects a dead ISP behind a live modem. A modem that lost its uplink still answers ARP/ping on its LAN side, so plain `check-gateway=ping` on the next hop never notices.
-- Measured detection on hardware: 20-30s (RouterOS pings every 10s, needs 2 consecutive failures). Do not claim 5-15s.
+- TWO detection paths, very different speeds. Measured on the Chateau LTE6 (wired <-> LTE):
+  - Link DOWN (cable pulled / port disabled): the probe route's next hop stops resolving, so the default route deactivates immediately. **1.2s**. No ping timeout involved.
+  - Link UP but path beyond it dead (ISP down behind live modem): must wait for probe pings to fail. **20-30s** (every 10s, 2 consecutive failures). This is the case the recursive design exists for.
+  - Failback after the link returns: **~36s**, dominated by DHCP re-binding before the probe route can resolve.
+- Do not quote a single number. Say which failure mode.
+- STALE GATEWAY LIMIT: the probe route pins the gateway learned at apply time. If a dhcp/pppoe uplink returns with a DIFFERENT gateway, the pinned route is stale and that uplink will not recover until a re-apply. Apply is idempotent, so a scheduled re-apply covers it.
 - Failover is fast, NOT seamless. Each uplink has its own public IP, so open connections break. Only an overlay tunnel would keep them.
 - Every uplink is created with `add-default-route=no` so nothing competes with these routes.
 - Every uplink gets `use-peer-dns=no` and the router uses `lan.dns.servers`. Keeping ISP resolvers means that after failover, routing works but every lookup times out - which reads as a failed failover and is very hard to diagnose.
