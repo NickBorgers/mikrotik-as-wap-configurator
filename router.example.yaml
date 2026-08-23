@@ -41,9 +41,16 @@ lan:
 
   dns:
     servers:                # the router's own resolvers
-      - 1.1.1.1
-      - 8.8.8.8
+      - 9.9.9.9
+      - 149.112.112.112
     allowRemoteRequests: true   # let LAN clients resolve through the router
+    #
+    # Keep these addresses DIFFERENT from every uplink's `probe` below.
+    # A probe address is pinned to its uplink by a route with no health check.
+    # If that uplink is up but the path beyond it is dead, the pin stays and the
+    # address stops answering. A resolver pinned that way stalls every query
+    # that picks it, exactly when the network is already degraded.
+    # Applying rejects an overlap rather than letting it through.
 
   # Fasttrack makes forwarding faster by letting established flows skip
   # connection tracking. That also means stale sessions linger longer after a

@@ -5,6 +5,7 @@ const yaml = require('js-yaml');
 const { configureMikroTik } = require('./mikrotik-no-vlan-filtering.js');
 const { configureCap, configureController } = require('./lib/capsman');
 const { configureRouter } = require('./lib/router');
+const { validateRouterConfig } = require('./lib/validate-router');
 
 function loadConfig(configFile) {
   try {
@@ -15,76 +16,6 @@ function loadConfig(configFile) {
     console.error(`Error loading config file: ${e.message}`);
     process.exit(1);
   }
-}
-
-const VALID_WAN_TYPES = ['dhcp', 'static', 'pppoe', 'lte'];
-
-/**
- * Validate the lan and wan blocks of a router-role configuration.
- * Returns an array of error strings.
- */
-function validateRouterConfig(config) {
-  const errors = [];
-  const lan = config.lan || {};
-  const wans = config.wan || [];
-
-  if (!lan.address) {
-    errors.push('Router: missing lan.address (e.g. 192.168.80.1/24)');
-  } else if (!/^\d+\.\d+\.\d+\.\d+\/\d{1,2}$/.test(lan.address)) {
-    errors.push(`Router: lan.address '${lan.address}' is not valid CIDR (e.g. 192.168.80.1/24)`);
-  }
-
-  if (!Array.isArray(wans) || wans.length === 0) {
-    errors.push('Router: wan must be a non-empty list of uplinks');
-    return errors;
-  }
-
-  const probes = new Map();
-  const distances = new Map();
-  const lanPorts = new Set(lan.ports || []);
-
-  wans.forEach((wan, index) => {
-    const label = wan.name || `wan[${index}]`;
-
-    if (!wan.interface) {
-      errors.push(`Router: ${label} is missing interface`);
-    } else if (lanPorts.has(wan.interface)) {
-      errors.push(`Router: ${wan.interface} is listed both as a WAN and in lan.ports - pick one`);
-    }
-
-    const type = wan.type || 'dhcp';
-    if (!VALID_WAN_TYPES.includes(type)) {
-      errors.push(`Router: ${label} has invalid type '${type}' (use ${VALID_WAN_TYPES.join(', ')})`);
-    }
-    if (type === 'static' && !wan.address) {
-      errors.push(`Router: ${label} is type static but has no address`);
-    }
-    if (type === 'static' && !wan.gateway) {
-      errors.push(`Router: ${label} is type static but has no gateway`);
-    }
-
-    if (wan.distance !== undefined) {
-      if (!Number.isInteger(wan.distance) || wan.distance < 1 || wan.distance > 255) {
-        errors.push(`Router: ${label} distance must be a whole number from 1 to 255`);
-      } else if (distances.has(wan.distance)) {
-        errors.push(`Router: ${label} and ${distances.get(wan.distance)} share distance ${wan.distance} - each uplink needs its own`);
-      } else {
-        distances.set(wan.distance, label);
-      }
-    }
-
-    // Two uplinks probing the same address would fight over one probe route,
-    // and the recursive lookup would silently follow whichever won.
-    if (wan.probe) {
-      if (probes.has(wan.probe)) {
-        errors.push(`Router: ${label} and ${probes.get(wan.probe)} both probe ${wan.probe} - each uplink needs its own target`);
-      } else {
-        probes.set(wan.probe, label);
-      }
-    }
-  });
-
-  return errors;
 }
 
 function validateConfig(config) {

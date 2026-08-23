@@ -18,6 +18,8 @@
 - `backup-multiple-devices.js` - CLI tool for multi-device backup
 - `lib/access-list.js` - WAP locking via access-list rules
 - `lib/router.js` - Router role: multi-WAN failover, NAT, DHCP server, DNS, firewall
+- `lib/validate-router.js` - Shared router validation (used by BOTH apply entry points)
+- `test/router.test.js` - Router regression tests (`npm test`)
 - `router.example.yaml` - Example router configuration (multi-WAN failover)
 - `config.yaml` - Active device configuration (gitignored, contains credentials)
 - `config.example.yaml` - Example for documentation and Docker image
@@ -364,6 +366,16 @@ const BAND_TO_INTERFACE = {
 - `configureWifiInterface()` omits `datapath.vlan-id` when `vlan` is undefined. No datapath object is created either.
 - `lib/backup.js` no longer requires a datapath to record an SSID, and omits `vlan` for untagged ones.
 - Validation: `vlan` is optional only when `role: router`.
+
+**Router Role: Hard-Won Constraints (v6.1.1 review fixes)**
+- Validation lives in `lib/validate-router.js`, NOT in `apply-config.js`. Both entry points must call it. It was previously only wired into the single-device path, so fleet routers were applied with zero validation.
+- `removeStaleLanAddresses()` must resolve `config.host` to an IP before comparing. `config.host` is routinely an FQDN here; `ipToInt()` returns null for one, so the lockout guard silently never fires. If resolution fails, remove NOTHING.
+- Each uplink's probe address must differ from every `lan.dns.servers` entry. The probe is pinned by a /32 with no health check, so a resolver pinned to a failing uplink stalls queries exactly when the network is degraded. Validation rejects the overlap.
+- Never let two uplinks share a probe. Two /32 routes on one destination with different gateways make the recursive lookup follow whichever won. `DEFAULT_PROBES` has four entries; beyond that `normalizeWans()` throws rather than reusing one.
+- Clear `WAN` list members by comment (`[find list=WAN comment~"^wan:"]`), not by the interfaces in the current config. Member comments are authoritative for backup, so a stale member resurrects a deleted uplink.
+- No interface ever gets a NAMED datapath. `configureWifiInterface()` writes `datapath.bridge=... datapath.vlan-id=N` inline. Read the VLAN off the interface with `/(?:datapath)?\.vlan-id=(\d+)/` - a named-datapath lookup always returns nothing.
+- `backup.js` deletes `managementInterfaces`/`disabledInterfaces` for routers. Any consumer must guard for that; `backup-multiple-devices.js` crashed on it.
+- Run `npm test` (`test/router.test.js`) before touching parsing or validation. Its fixtures are real captured RouterOS output.
 
 ### MikroTik RouterOS v7 WiFi Quirks
 
