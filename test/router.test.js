@@ -139,6 +139,38 @@ test('comments render as ;;; lines, not comment="..."', () => {
   assert.strictEqual(real.match(/comment="([^"]+)"/), null, 'detail output has no comment= form');
 });
 
+console.log('\n=== Backup record parsing (real device fixtures) ===');
+const { isDisabledRecord } = require('../lib/backup');
+const { splitDetailRecords } = require('../lib/router');
+
+test('a disabled radio is detected from the X flag, not disabled=yes', () => {
+  // print detail never emits disabled=yes; disabled is an X in the flag field.
+  assert.strictEqual(isDisabledRecord(' 0 M BX default-name="wifi1" name="wifi1" mac-address=04:F4'), true);
+  assert.strictEqual(isDisabledRecord(' 1 M B  default-name="wifi2" name="wifi2" l2mtu=1560'), false);
+});
+test('a disabled radio carrying a comment is still detected', () => {
+  // The flag field is followed by ";;;" rather than a key, which an earlier
+  // version could not parse - so a commented disabled radio read as enabled.
+  assert.strictEqual(isDisabledRecord(' 0 X   ;;; managed radio name="wifi1"'), true);
+  assert.strictEqual(isDisabledRecord(' 0 M B ;;; some note name="wifi2"'), false);
+});
+test('an X inside a value is not mistaken for the disabled flag', () => {
+  assert.strictEqual(isDisabledRecord(' 3 M B  configuration.ssid="XRAY" country=US'), false);
+});
+test('a record with no flags at all is not disabled', () => {
+  // /ip pool print detail has no flag column.
+  assert.strictEqual(isDisabledRecord(' 0 name="lan-pool" ranges=192.168.80.100-192.168.80.200'), false);
+});
+test('every record is parsed, not just indexes 0-5', () => {
+  // Two radios plus four virtual SSIDs is six interfaces; the old loop only
+  // recognised 0-5, so later ones merged into their predecessor.
+  const out = 'Flags: M - master; B - bound; X - disabled\r\n' +
+    Array.from({ length: 8 }, (_, i) => ` ${i} M B  name="wifi${i}" \r\n        mac-address=00:00:00:00:00:0${i} `).join('\r\n');
+  const records = splitDetailRecords(out);
+  assert.strictEqual(records.length, 8, 'all eight interfaces must survive parsing');
+  assert.ok(records[7].includes('wifi7'));
+});
+
 console.log('\n=== Command argument safety ===');
 const args = require('../lib/routeros-args');
 test('q() neutralises a quote, so a value cannot end the string', () => {
@@ -155,6 +187,15 @@ test('unquoted positions reject anything but a plain identifier', () => {
   assert.strictEqual(args.ifaceName('ether1'), 'ether1');
   assert.throws(() => args.ifaceName('ether2; /ip firewall filter remove [find]'), /Unsafe or malformed/);
   assert.throws(() => args.ifaceName('ether2 comment=x'), /Unsafe or malformed/);
+});
+test('band settings reject injection in width and txPower', () => {
+  // applyBandSettings() feeds these into an unquoted command position.
+  assert.throws(() => args.must('20mhz; /user add name=x', /^[0-9a-zA-Z/+-]{1,32}$/, 'width'), /Unsafe or malformed/);
+  assert.throws(() => args.integer('15; /user add name=x', 'txPower'), /Unsafe or malformed/);
+  assert.strictEqual(args.must('20/40/80mhz', /^[0-9a-zA-Z/+-]{1,32}$/, 'width'), '20/40/80mhz');
+});
+test('a country name with a quote cannot escape its argument', () => {
+  assert.strictEqual(args.q('United States" ; /user add name=x'), '"United States\\" ; /user add name=x"');
 });
 test('addresses, ranges and durations are checked, not escaped', () => {
   assert.throws(() => args.cidr('999.999.999.999/99'), /Unsafe or malformed/);
@@ -190,15 +231,48 @@ test('rejects two uplinks sharing a probe address', () => {
   });
   assert.ok(e.some(x => /both probe/.test(x)));
 });
-test('warns, but does not reject, a probe that is also a resolver', () => {
-  // This degrades DNS in one failure mode; it does not break the config.
-  // Erroring would refuse to apply working production deployments.
+test('warns when pinned resolvers sit on different uplinks (the production shape)', () => {
+  // Each resolver is pinned, but to a different uplink, so whenever any uplink
+  // is live at least one resolver answers. Degraded, not broken - and this is
+  // a real deployment, so rejecting it would be wrong.
+  const { errors: e, warnings: warn } = validateRouterConfig({
+    lan: { address: '192.168.80.1/24', dns: { servers: ['1.1.1.1', '8.8.8.8'] } },
+    wan: [
+      { name: 'primary', interface: 'e1', distance: 1, probe: '8.8.8.8' },
+      { name: 'backup', interface: 'lte1', distance: 2, probe: '1.1.1.1' }
+    ]
+  });
+  assert.deepStrictEqual(e, [], 'must not be an error');
+  assert.strictEqual(warn.length, 1);
+  assert.ok(/different uplinks/.test(warn[0]), `warning should explain why it is survivable: ${warn[0]}`);
+});
+test('errors when every resolver is pinned to one uplink', () => {
+  // Nothing is left to fall back to: that uplink losing its path takes DNS out.
   const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24', dns: { servers: ['8.8.8.8'] } },
     wan: [{ name: 'a', interface: 'e1', probe: '8.8.8.8' }]
   });
-  assert.strictEqual(e.length, 0, 'must not be an error');
-  assert.ok(warn.some(x => /probe target/.test(x)), 'must be a warning');
+  assert.strictEqual(warn.length, 0);
+  assert.ok(e.some(x => /every lan.dns resolver is pinned/.test(x)), `expected an error, got: ${e.join('; ')}`);
+});
+test('warns when one resolver is pinned and another is independent', () => {
+  const { errors: e, warnings: warn } = validateRouterConfig({
+    lan: { address: '192.168.80.1/24', dns: { servers: ['8.8.8.8', '9.9.9.9'] } },
+    wan: [
+      { name: 'a', interface: 'e1', distance: 1, probe: '8.8.8.8' },
+      { name: 'b', interface: 'e2', distance: 2, probe: '1.1.1.1' }
+    ]
+  });
+  assert.deepStrictEqual(e, []);
+  assert.ok(warn.some(x => /9\.9\.9\.9 stays reachable/.test(x)));
+});
+test('says nothing when probes and resolvers are disjoint', () => {
+  const { errors: e, warnings: warn } = validateRouterConfig({
+    lan: { address: '192.168.80.1/24', dns: { servers: ['9.9.9.9'] } },
+    wan: [{ name: 'a', interface: 'e1', probe: '8.8.8.8' }]
+  });
+  assert.deepStrictEqual(e, []);
+  assert.deepStrictEqual(warn, []);
 });
 test('rejects duplicate explicit distances', () => {
   const { errors: e, warnings: warn } = validateRouterConfig({
@@ -216,13 +290,14 @@ test('rejects an implicit distance colliding with an explicit one', () => {
   });
   assert.ok(e.some(x => /end up at distance 1/.test(x)));
 });
-test('warns when a default-assigned probe is also a resolver', () => {
-  const { errors: e, warnings: warn } = validateRouterConfig({
+test('catches an overlap created by a default-assigned probe', () => {
+  // No explicit probe, so 'a' gets 8.8.8.8 by default - which is the only
+  // resolver. Checking only what the user typed missed this entirely.
+  const { errors: e } = validateRouterConfig({
     lan: { address: '192.168.80.1/24', dns: { servers: ['8.8.8.8'] } },
     wan: [{ name: 'a', interface: 'e1' }]
   });
-  assert.strictEqual(e.length, 0);
-  assert.ok(warn.some(x => /assigned by default/.test(x)));
+  assert.ok(e.some(x => /every lan.dns resolver is pinned/.test(x)));
 });
 test('rejects duplicate uplink names', () => {
   const { errors: e, warnings: warn } = validateRouterConfig({
@@ -280,6 +355,8 @@ test('a real production config validates cleanly', () => {
     ]
   });
   assert.deepStrictEqual(e, [], `expected no errors, got: ${e.join('; ')}`);
+  // It should still say something: the overlap is survivable, not invisible.
+  assert.strictEqual(warn.length, 1, 'the probe/resolver overlap should still warn');
 });
 
 (async () => {

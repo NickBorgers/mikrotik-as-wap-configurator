@@ -131,7 +131,67 @@ Three defects found by round-tripping a live production router:
 
 With these fixed, a backup of a production router round-trips exactly.
 
+### Fixed — third review round (Codex): 8 findings
+
+**`applyBandSettings()` was still injectable (Critical).** The v6.1.2 encoding
+pass covered `lib/router.js` and `configureWifiInterface()`, but missed this
+function, which interpolates `txPower`, `width`, `country` and the interface
+name straight into a command. It is called from five places in
+`lib/capsman.js`, so this affected the AP roles, not just the router role.
+
+**A disabled radio carrying a comment read as enabled.** The flag-field regex
+required a `key=value` on the same line, but RouterOS can put a `;;;` comment
+between the flags and the first property. Now parsed independently, with the
+`X`-inside-a-value false positive covered by tests.
+
+**Records past index 5 were merged or lost.** The WiFi interface scan treated
+any trimmed line starting with `0`-`5` as a new record. Two radios plus four
+virtual SSIDs is six interfaces, so real devices hit this: later interfaces
+merged into their predecessor and a continuation line beginning with a digit
+split a record in half. It now uses the same splitter as every other reader.
+
+**The probe/resolver warning promised a fallback that might not exist.**
+Downgrading the overlap to a blanket warning went too far the other way.
+Severity now depends on what is actually left standing:
+
+| Situation | Result |
+|---|---|
+| Some resolver is not a probe target | Warning — a fallback exists |
+| Pinned resolvers span two or more uplinks | Warning — one stays reachable |
+| Every resolver pinned to a single uplink | **Error** — that uplink failing takes DNS out |
+
+**The VLAN-unset fallback assumed success.** If a RouterOS build rejects
+`!datapath.vlan-id`, the retry cannot clear an existing VLAN. It now reads the
+interface back and reports the interface as still tagged, with the manual
+command, instead of reporting success.
+
+**Orphaned bridge ports and unsupported names are now distinguished.** An
+internal id such as `*2` is skipped quietly — it is not usable in a config — but
+a real interface name this YAML format cannot express is reported, because
+silently dropping a live LAN port from a backup is worse than saying so.
+
+### Known: the AP roles still interpolate raw values
+
+The encoding work so far covers `lib/router.js` and `lib/wifi-config.js`. A
+repo-wide sweep found roughly forty further sites in `lib/configure.js`,
+`lib/infrastructure.js` and `lib/capsman.js` — bond names, interface names,
+VLAN ids, syslog server and topics, device identity, MAC addresses — that still
+interpolate configuration values directly.
+
+These predate the router role and are lower risk in practice: the values are
+low-entropy identifiers unlikely to contain quotes, and the config author
+already holds the device credentials. They are not fixed here because those
+paths run against a production access-point fleet that this change set has no
+way to test. Tracked rather than quietly half-done.
+
 ### Tests
+
+49 assertions, up from 39. New coverage for the backup record parsing (flagged
+and unflagged records, `;;;` comments, `X` inside a value, eight-record
+splitting), band-setting injection, and each branch of the overlap severity
+rule.
+
+### Superseded
 
 `test/router.test.js` grows to 39 assertions, adding command-argument safety
 (quote, dollar sign, semicolon and `[find]` injection attempts against both
