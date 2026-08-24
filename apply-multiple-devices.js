@@ -103,7 +103,9 @@ function validateDeviceConfig(config, index, deploymentSsids) {
   } else if (role === 'router') {
     // Routers need the same lan/wan checks the single-device path applies.
     // SSIDs are optional for this role and no CAPsMAN ordering applies.
-    errors.push(...validateRouterConfig(config, `Device ${index} (router)`));
+    const router = validateRouterConfig(config, `Device ${index} (router)`);
+    errors.push(...router.errors);
+    router.warnings.forEach(w => console.warn(`⚠️  ${w}`));
   } else {
     // Controller and standalone devices need SSIDs
     const ssids = config.ssids || [];

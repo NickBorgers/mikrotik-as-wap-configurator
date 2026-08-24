@@ -170,35 +170,38 @@ test('accepts a well-formed config', () => {
   assert.deepStrictEqual(validateRouterConfig({
     lan: { address: '192.168.80.1/24', ports: ['ether2'], dns: { servers: ['9.9.9.9'] } },
     wan: [{ name: 'p', interface: 'ether1', type: 'dhcp', distance: 1, probe: '8.8.8.8' }]
-  }), []);
+  }).errors, []);
 });
 test('rejects a bare IP as lan.address', () => {
-  const e = validateRouterConfig({ lan: { address: '192.168.80.1' }, wan: [{ interface: 'e1' }] });
+  const { errors: e, warnings: warn } = validateRouterConfig({ lan: { address: '192.168.80.1' }, wan: [{ interface: 'e1' }] });
   assert.ok(e.some(x => /not valid CIDR/.test(x)));
 });
 test('rejects an interface used as both WAN and LAN port', () => {
-  const e = validateRouterConfig({
+  const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24', ports: ['ether1'] },
     wan: [{ name: 'p', interface: 'ether1' }]
   });
   assert.ok(e.some(x => /both as a WAN and in lan.ports/.test(x)));
 });
 test('rejects two uplinks sharing a probe address', () => {
-  const e = validateRouterConfig({
+  const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24' },
     wan: [{ name: 'a', interface: 'e1', probe: '8.8.8.8' }, { name: 'b', interface: 'e2', probe: '8.8.8.8' }]
   });
   assert.ok(e.some(x => /both probe/.test(x)));
 });
-test('rejects a probe address that is also a resolver', () => {
-  const e = validateRouterConfig({
+test('warns, but does not reject, a probe that is also a resolver', () => {
+  // This degrades DNS in one failure mode; it does not break the config.
+  // Erroring would refuse to apply working production deployments.
+  const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24', dns: { servers: ['8.8.8.8'] } },
     wan: [{ name: 'a', interface: 'e1', probe: '8.8.8.8' }]
   });
-  assert.ok(e.some(x => /probe target and a lan.dns resolver/.test(x)));
+  assert.strictEqual(e.length, 0, 'must not be an error');
+  assert.ok(warn.some(x => /probe target/.test(x)), 'must be a warning');
 });
 test('rejects duplicate explicit distances', () => {
-  const e = validateRouterConfig({
+  const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24' },
     wan: [{ name: 'a', interface: 'e1', distance: 1 }, { name: 'b', interface: 'e2', distance: 1 }]
   });
@@ -207,34 +210,33 @@ test('rejects duplicate explicit distances', () => {
 test('rejects an implicit distance colliding with an explicit one', () => {
   // 'a' has no distance, so it defaults to 1 - the same as 'b'. Checking only
   // what the user typed let this through.
-  const e = validateRouterConfig({
+  const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24' },
     wan: [{ name: 'a', interface: 'e1' }, { name: 'b', interface: 'e2', distance: 1 }]
   });
   assert.ok(e.some(x => /end up at distance 1/.test(x)));
 });
-test('rejects a default-assigned probe that is also a resolver', () => {
-  // No explicit probe, so 'a' gets 8.8.8.8 by default - which is also the
-  // configured resolver.
-  const e = validateRouterConfig({
+test('warns when a default-assigned probe is also a resolver', () => {
+  const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24', dns: { servers: ['8.8.8.8'] } },
     wan: [{ name: 'a', interface: 'e1' }]
   });
-  assert.ok(e.some(x => /assigned by default/.test(x)));
+  assert.strictEqual(e.length, 0);
+  assert.ok(warn.some(x => /assigned by default/.test(x)));
 });
 test('rejects duplicate uplink names', () => {
-  const e = validateRouterConfig({
+  const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24' },
     wan: [{ name: 'a', interface: 'e1', distance: 1 }, { name: 'a', interface: 'e2', distance: 2 }]
   });
   assert.ok(e.some(x => /both named/.test(x)));
 });
 test('rejects a syntactically valid but impossible CIDR', () => {
-  const e = validateRouterConfig({ lan: { address: '999.999.999.999/99' }, wan: [{ interface: 'e1' }] });
+  const { errors: e, warnings: warn } = validateRouterConfig({ lan: { address: '999.999.999.999/99' }, wan: [{ interface: 'e1' }] });
   assert.ok(e.some(x => /not valid CIDR/.test(x)));
 });
 test('rejects a malformed pool and lease time', () => {
-  const e = validateRouterConfig({
+  const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24', dhcpServer: { pool: 'not-a-range', leaseTime: 'forever' } },
     wan: [{ name: 'a', interface: 'e1' }]
   });
@@ -242,7 +244,7 @@ test('rejects a malformed pool and lease time', () => {
   assert.ok(e.some(x => /leaseTime .* must look like/.test(x)));
 });
 test('rejects static and pppoe uplinks missing required fields', () => {
-  const e = validateRouterConfig({
+  const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24' },
     wan: [{ name: 's', interface: 'e1', type: 'static' }, { name: 'd', interface: 'e2', type: 'pppoe' }]
   });
@@ -251,15 +253,33 @@ test('rejects static and pppoe uplinks missing required fields', () => {
   assert.ok(e.some(x => /pppoe but has no user/.test(x)));
 });
 test('rejects a dhcpServer with no usable lan.address', () => {
-  const e = validateRouterConfig({ lan: { dhcpServer: { pool: 'a-b' } }, wan: [{ interface: 'e1' }] });
+  const { errors: e, warnings: warn } = validateRouterConfig({ lan: { dhcpServer: { pool: 'a-b' } }, wan: [{ interface: 'e1' }] });
   assert.ok(e.some(x => /needs a valid lan.address/.test(x)));
 });
 test('rejects the same interface used by two uplinks', () => {
-  const e = validateRouterConfig({
+  const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24' },
     wan: [{ name: 'a', interface: 'e1' }, { name: 'b', interface: 'e1' }]
   });
   assert.ok(e.some(x => /one uplink per interface/.test(x)));
+});
+
+test('a real production config validates cleanly', () => {
+  // Regression guard: v6.1.1 rejected this shape outright, which would have
+  // broken a working deployment on upgrade.
+  const { errors: e, warnings: warn } = validateRouterConfig({
+    lan: {
+      address: '192.168.80.1/24',
+      ports: ['ether2', 'ether3', 'ether4', 'ether5'],
+      dhcpServer: { pool: '192.168.80.100-192.168.80.200', leaseTime: '12h' },
+      dns: { servers: ['1.1.1.1', '8.8.8.8'], allowRemoteRequests: true }
+    },
+    wan: [
+      { name: 'primary', interface: 'ether1', type: 'dhcp', distance: 1, probe: '8.8.8.8' },
+      { name: 'backup', interface: 'lte1', type: 'lte', apn: 'fast.t-mobile.com', distance: 2, probe: '1.1.1.1' }
+    ]
+  });
+  assert.deepStrictEqual(e, [], `expected no errors, got: ${e.join('; ')}`);
 });
 
 (async () => {
