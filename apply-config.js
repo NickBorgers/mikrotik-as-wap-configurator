@@ -31,7 +31,9 @@ function validateConfig(config) {
   }
 
   if (role === 'router') {
-    errors.push(...validateRouterConfig(config));
+    const router = validateRouterConfig(config);
+    errors.push(...router.errors);
+    router.warnings.forEach(w => console.warn(`⚠️  ${w}`));
   }
 
   // CAP devices receive SSIDs from the controller.

@@ -371,7 +371,7 @@ const BAND_TO_INTERFACE = {
 **Router Role: Hard-Won Constraints (v6.1.1 review fixes)**
 - Validation lives in `lib/validate-router.js`, NOT in `apply-config.js`. Both entry points must call it. It was previously only wired into the single-device path, so fleet routers were applied with zero validation.
 - `removeStaleLanAddresses()` must resolve `config.host` to an IP before comparing. `config.host` is routinely an FQDN here; `ipToInt()` returns null for one, so the lockout guard silently never fires. If resolution fails, remove NOTHING.
-- Each uplink's probe address must differ from every `lan.dns.servers` entry. The probe is pinned by a /32 with no health check, so a resolver pinned to a failing uplink stalls queries exactly when the network is degraded. Validation rejects the overlap.
+- Each uplink's probe address should differ from every `lan.dns.servers` entry. The probe is pinned by a /32 with no health check, so a resolver pinned to a failing uplink stalls queries until they time out. This is a WARNING, not an error - it degrades DNS, it does not break it, and erroring rejected a working production config on upgrade (shipped broken in v6.1.1).
 - Never let two uplinks share a probe. Two /32 routes on one destination with different gateways make the recursive lookup follow whichever won. `DEFAULT_PROBES` has four entries; beyond that `normalizeWans()` throws rather than reusing one.
 - Clear `WAN` list members by comment (`[find list=WAN comment~"^wan:"]`), not by the interfaces in the current config. Member comments are authoritative for backup, so a stale member resurrects a deleted uplink.
 - No interface ever gets a NAMED datapath. `configureWifiInterface()` writes `datapath.bridge=... datapath.vlan-id=N` inline. Read the VLAN off the interface with `/(?:datapath)?\.vlan-id=(\d+)/` - a named-datapath lookup always returns nothing.
@@ -399,6 +399,25 @@ const BAND_TO_INTERFACE = {
 **RouterOS `set` Does Not Clear Unspecified Properties**
 - Omitting `datapath.vlan-id` leaves the old VLAN in place, so a tagged SSID could never become untagged. Use the `!datapath.vlan-id` unset form.
 - That syntax is not confirmed across all RouterOS builds and this path configures every SSID for every role, so `configureWifiInterface()` retries without it on a syntax error rather than failing the apply.
+
+**Backup Must Ignore What The Device Is Not Using (v6.1.2)**
+- `print detail` NEVER emits `disabled=yes`. Disabled is an `X` in the flag field, which is followed by a `key=value`, a `;;;` comment, OR a line break. Use `isDisabledRecord()` in `lib/backup.js`; do not assume key=value follows on the same line. The old `disabled=yes` check never matched, so disabled radios were backed up as if broadcasting.
+- Skip band settings for a disabled radio too, or the backup carries channel/width the source config never declared.
+- A bridge port whose interface no longer resolves prints as `*2`. Filter LAN ports through `IDENTIFIER` - `interface=*2` is not usable in a config.
+- `validateRouterConfig()` returns `{errors, warnings}`, not an array.
+- Split records with `splitDetailRecords()` from `lib/router.js`. A hand-rolled "line starts with 0-5" loop silently merged interfaces 6+ on real devices.
+
+**Command Encoding Is Not Finished (as of v6.1.2)**
+- DONE: `lib/router.js`, `lib/wifi-config.js` (`configureWifiInterface` AND `applyBandSettings`).
+- NOT DONE: ~40 sites in `lib/configure.js`, `lib/infrastructure.js`, `lib/capsman.js` - bond names, interface names, VLAN ids, syslog server/topics, identity, MAC addresses.
+- Lower risk (low-entropy identifiers, and the config author already holds device credentials) but still real. Left undone because those paths serve a production AP fleet that could not be tested.
+- Find remaining sites: look for `${...}` inside a template literal passed to `mt.exec()` where the value is not wrapped in `q()`/`ifaceName()`/`integer()`/etc.
+
+**Probe/Resolver Overlap: Severity Depends On What Survives**
+- Some resolver not a probe -> WARNING (a fallback exists).
+- Pinned resolvers span 2+ uplinks -> WARNING (one stays reachable whenever any uplink is live). This is the common real deployment.
+- Every resolver pinned to ONE uplink -> ERROR (that uplink losing its path takes DNS out entirely).
+- v6.1.1 made all overlap an error and broke a working production config; the first correction made it all a warning, which promised a fallback that may not exist. Neither extreme is right.
 
 ### MikroTik RouterOS v7 WiFi Quirks
 

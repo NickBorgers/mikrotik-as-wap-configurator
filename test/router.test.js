@@ -139,6 +139,38 @@ test('comments render as ;;; lines, not comment="..."', () => {
   assert.strictEqual(real.match(/comment="([^"]+)"/), null, 'detail output has no comment= form');
 });
 
+console.log('\n=== Backup record parsing (real device fixtures) ===');
+const { isDisabledRecord } = require('../lib/backup');
+const { splitDetailRecords } = require('../lib/router');
+
+test('a disabled radio is detected from the X flag, not disabled=yes', () => {
+  // print detail never emits disabled=yes; disabled is an X in the flag field.
+  assert.strictEqual(isDisabledRecord(' 0 M BX default-name="wifi1" name="wifi1" mac-address=04:F4'), true);
+  assert.strictEqual(isDisabledRecord(' 1 M B  default-name="wifi2" name="wifi2" l2mtu=1560'), false);
+});
+test('a disabled radio carrying a comment is still detected', () => {
+  // The flag field is followed by ";;;" rather than a key, which an earlier
+  // version could not parse - so a commented disabled radio read as enabled.
+  assert.strictEqual(isDisabledRecord(' 0 X   ;;; managed radio name="wifi1"'), true);
+  assert.strictEqual(isDisabledRecord(' 0 M B ;;; some note name="wifi2"'), false);
+});
+test('an X inside a value is not mistaken for the disabled flag', () => {
+  assert.strictEqual(isDisabledRecord(' 3 M B  configuration.ssid="XRAY" country=US'), false);
+});
+test('a record with no flags at all is not disabled', () => {
+  // /ip pool print detail has no flag column.
+  assert.strictEqual(isDisabledRecord(' 0 name="lan-pool" ranges=192.168.80.100-192.168.80.200'), false);
+});
+test('every record is parsed, not just indexes 0-5', () => {
+  // Two radios plus four virtual SSIDs is six interfaces; the old loop only
+  // recognised 0-5, so later ones merged into their predecessor.
+  const out = 'Flags: M - master; B - bound; X - disabled\r\n' +
+    Array.from({ length: 8 }, (_, i) => ` ${i} M B  name="wifi${i}" \r\n        mac-address=00:00:00:00:00:0${i} `).join('\r\n');
+  const records = splitDetailRecords(out);
+  assert.strictEqual(records.length, 8, 'all eight interfaces must survive parsing');
+  assert.ok(records[7].includes('wifi7'));
+});
+
 console.log('\n=== Command argument safety ===');
 const args = require('../lib/routeros-args');
 test('q() neutralises a quote, so a value cannot end the string', () => {
@@ -156,6 +188,15 @@ test('unquoted positions reject anything but a plain identifier', () => {
   assert.throws(() => args.ifaceName('ether2; /ip firewall filter remove [find]'), /Unsafe or malformed/);
   assert.throws(() => args.ifaceName('ether2 comment=x'), /Unsafe or malformed/);
 });
+test('band settings reject injection in width and txPower', () => {
+  // applyBandSettings() feeds these into an unquoted command position.
+  assert.throws(() => args.must('20mhz; /user add name=x', /^[0-9a-zA-Z/+-]{1,32}$/, 'width'), /Unsafe or malformed/);
+  assert.throws(() => args.integer('15; /user add name=x', 'txPower'), /Unsafe or malformed/);
+  assert.strictEqual(args.must('20/40/80mhz', /^[0-9a-zA-Z/+-]{1,32}$/, 'width'), '20/40/80mhz');
+});
+test('a country name with a quote cannot escape its argument', () => {
+  assert.strictEqual(args.q('United States" ; /user add name=x'), '"United States\\" ; /user add name=x"');
+});
 test('addresses, ranges and durations are checked, not escaped', () => {
   assert.throws(() => args.cidr('999.999.999.999/99'), /Unsafe or malformed/);
   assert.throws(() => args.ipv4('8.8.8.8; /user add name=x'), /Unsafe or malformed/);
@@ -170,35 +211,71 @@ test('accepts a well-formed config', () => {
   assert.deepStrictEqual(validateRouterConfig({
     lan: { address: '192.168.80.1/24', ports: ['ether2'], dns: { servers: ['9.9.9.9'] } },
     wan: [{ name: 'p', interface: 'ether1', type: 'dhcp', distance: 1, probe: '8.8.8.8' }]
-  }), []);
+  }).errors, []);
 });
 test('rejects a bare IP as lan.address', () => {
-  const e = validateRouterConfig({ lan: { address: '192.168.80.1' }, wan: [{ interface: 'e1' }] });
+  const { errors: e, warnings: warn } = validateRouterConfig({ lan: { address: '192.168.80.1' }, wan: [{ interface: 'e1' }] });
   assert.ok(e.some(x => /not valid CIDR/.test(x)));
 });
 test('rejects an interface used as both WAN and LAN port', () => {
-  const e = validateRouterConfig({
+  const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24', ports: ['ether1'] },
     wan: [{ name: 'p', interface: 'ether1' }]
   });
   assert.ok(e.some(x => /both as a WAN and in lan.ports/.test(x)));
 });
 test('rejects two uplinks sharing a probe address', () => {
-  const e = validateRouterConfig({
+  const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24' },
     wan: [{ name: 'a', interface: 'e1', probe: '8.8.8.8' }, { name: 'b', interface: 'e2', probe: '8.8.8.8' }]
   });
   assert.ok(e.some(x => /both probe/.test(x)));
 });
-test('rejects a probe address that is also a resolver', () => {
-  const e = validateRouterConfig({
+test('warns when pinned resolvers sit on different uplinks (the production shape)', () => {
+  // Each resolver is pinned, but to a different uplink, so whenever any uplink
+  // is live at least one resolver answers. Degraded, not broken - and this is
+  // a real deployment, so rejecting it would be wrong.
+  const { errors: e, warnings: warn } = validateRouterConfig({
+    lan: { address: '192.168.80.1/24', dns: { servers: ['1.1.1.1', '8.8.8.8'] } },
+    wan: [
+      { name: 'primary', interface: 'e1', distance: 1, probe: '8.8.8.8' },
+      { name: 'backup', interface: 'lte1', distance: 2, probe: '1.1.1.1' }
+    ]
+  });
+  assert.deepStrictEqual(e, [], 'must not be an error');
+  assert.strictEqual(warn.length, 1);
+  assert.ok(/different uplinks/.test(warn[0]), `warning should explain why it is survivable: ${warn[0]}`);
+});
+test('errors when every resolver is pinned to one uplink', () => {
+  // Nothing is left to fall back to: that uplink losing its path takes DNS out.
+  const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24', dns: { servers: ['8.8.8.8'] } },
     wan: [{ name: 'a', interface: 'e1', probe: '8.8.8.8' }]
   });
-  assert.ok(e.some(x => /probe target and a lan.dns resolver/.test(x)));
+  assert.strictEqual(warn.length, 0);
+  assert.ok(e.some(x => /every lan.dns resolver is pinned/.test(x)), `expected an error, got: ${e.join('; ')}`);
+});
+test('warns when one resolver is pinned and another is independent', () => {
+  const { errors: e, warnings: warn } = validateRouterConfig({
+    lan: { address: '192.168.80.1/24', dns: { servers: ['8.8.8.8', '9.9.9.9'] } },
+    wan: [
+      { name: 'a', interface: 'e1', distance: 1, probe: '8.8.8.8' },
+      { name: 'b', interface: 'e2', distance: 2, probe: '1.1.1.1' }
+    ]
+  });
+  assert.deepStrictEqual(e, []);
+  assert.ok(warn.some(x => /9\.9\.9\.9 stays reachable/.test(x)));
+});
+test('says nothing when probes and resolvers are disjoint', () => {
+  const { errors: e, warnings: warn } = validateRouterConfig({
+    lan: { address: '192.168.80.1/24', dns: { servers: ['9.9.9.9'] } },
+    wan: [{ name: 'a', interface: 'e1', probe: '8.8.8.8' }]
+  });
+  assert.deepStrictEqual(e, []);
+  assert.deepStrictEqual(warn, []);
 });
 test('rejects duplicate explicit distances', () => {
-  const e = validateRouterConfig({
+  const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24' },
     wan: [{ name: 'a', interface: 'e1', distance: 1 }, { name: 'b', interface: 'e2', distance: 1 }]
   });
@@ -207,34 +284,34 @@ test('rejects duplicate explicit distances', () => {
 test('rejects an implicit distance colliding with an explicit one', () => {
   // 'a' has no distance, so it defaults to 1 - the same as 'b'. Checking only
   // what the user typed let this through.
-  const e = validateRouterConfig({
+  const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24' },
     wan: [{ name: 'a', interface: 'e1' }, { name: 'b', interface: 'e2', distance: 1 }]
   });
   assert.ok(e.some(x => /end up at distance 1/.test(x)));
 });
-test('rejects a default-assigned probe that is also a resolver', () => {
-  // No explicit probe, so 'a' gets 8.8.8.8 by default - which is also the
-  // configured resolver.
-  const e = validateRouterConfig({
+test('catches an overlap created by a default-assigned probe', () => {
+  // No explicit probe, so 'a' gets 8.8.8.8 by default - which is the only
+  // resolver. Checking only what the user typed missed this entirely.
+  const { errors: e } = validateRouterConfig({
     lan: { address: '192.168.80.1/24', dns: { servers: ['8.8.8.8'] } },
     wan: [{ name: 'a', interface: 'e1' }]
   });
-  assert.ok(e.some(x => /assigned by default/.test(x)));
+  assert.ok(e.some(x => /every lan.dns resolver is pinned/.test(x)));
 });
 test('rejects duplicate uplink names', () => {
-  const e = validateRouterConfig({
+  const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24' },
     wan: [{ name: 'a', interface: 'e1', distance: 1 }, { name: 'a', interface: 'e2', distance: 2 }]
   });
   assert.ok(e.some(x => /both named/.test(x)));
 });
 test('rejects a syntactically valid but impossible CIDR', () => {
-  const e = validateRouterConfig({ lan: { address: '999.999.999.999/99' }, wan: [{ interface: 'e1' }] });
+  const { errors: e, warnings: warn } = validateRouterConfig({ lan: { address: '999.999.999.999/99' }, wan: [{ interface: 'e1' }] });
   assert.ok(e.some(x => /not valid CIDR/.test(x)));
 });
 test('rejects a malformed pool and lease time', () => {
-  const e = validateRouterConfig({
+  const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24', dhcpServer: { pool: 'not-a-range', leaseTime: 'forever' } },
     wan: [{ name: 'a', interface: 'e1' }]
   });
@@ -242,7 +319,7 @@ test('rejects a malformed pool and lease time', () => {
   assert.ok(e.some(x => /leaseTime .* must look like/.test(x)));
 });
 test('rejects static and pppoe uplinks missing required fields', () => {
-  const e = validateRouterConfig({
+  const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24' },
     wan: [{ name: 's', interface: 'e1', type: 'static' }, { name: 'd', interface: 'e2', type: 'pppoe' }]
   });
@@ -251,15 +328,35 @@ test('rejects static and pppoe uplinks missing required fields', () => {
   assert.ok(e.some(x => /pppoe but has no user/.test(x)));
 });
 test('rejects a dhcpServer with no usable lan.address', () => {
-  const e = validateRouterConfig({ lan: { dhcpServer: { pool: 'a-b' } }, wan: [{ interface: 'e1' }] });
+  const { errors: e, warnings: warn } = validateRouterConfig({ lan: { dhcpServer: { pool: 'a-b' } }, wan: [{ interface: 'e1' }] });
   assert.ok(e.some(x => /needs a valid lan.address/.test(x)));
 });
 test('rejects the same interface used by two uplinks', () => {
-  const e = validateRouterConfig({
+  const { errors: e, warnings: warn } = validateRouterConfig({
     lan: { address: '192.168.80.1/24' },
     wan: [{ name: 'a', interface: 'e1' }, { name: 'b', interface: 'e1' }]
   });
   assert.ok(e.some(x => /one uplink per interface/.test(x)));
+});
+
+test('a real production config validates cleanly', () => {
+  // Regression guard: v6.1.1 rejected this shape outright, which would have
+  // broken a working deployment on upgrade.
+  const { errors: e, warnings: warn } = validateRouterConfig({
+    lan: {
+      address: '192.168.80.1/24',
+      ports: ['ether2', 'ether3', 'ether4', 'ether5'],
+      dhcpServer: { pool: '192.168.80.100-192.168.80.200', leaseTime: '12h' },
+      dns: { servers: ['1.1.1.1', '8.8.8.8'], allowRemoteRequests: true }
+    },
+    wan: [
+      { name: 'primary', interface: 'ether1', type: 'dhcp', distance: 1, probe: '8.8.8.8' },
+      { name: 'backup', interface: 'lte1', type: 'lte', apn: 'fast.t-mobile.com', distance: 2, probe: '1.1.1.1' }
+    ]
+  });
+  assert.deepStrictEqual(e, [], `expected no errors, got: ${e.join('; ')}`);
+  // It should still say something: the overlap is survivable, not invisible.
+  assert.strictEqual(warn.length, 1, 'the probe/resolver overlap should still warn');
 });
 
 (async () => {

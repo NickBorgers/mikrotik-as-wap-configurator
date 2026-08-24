@@ -102,17 +102,114 @@ The password was written during apply but never read back, so applying a
 generated backup reset the uplink with an empty password. It now round-trips,
 and if it cannot be read the backup says so explicitly.
 
+### Fixed — v6.1.1 rejected a working production config
+
+The probe/resolver overlap check, added in v6.1.1, was an error. A real
+deployment using `probe: 8.8.8.8` / `1.1.1.1` alongside
+`lan.dns.servers: [1.1.1.1, 8.8.8.8]` therefore stopped applying on upgrade.
+
+The overlap degrades DNS in one failure mode — queries picking the pinned
+resolver stall until they time out and fall back — it does not break the
+config. Refusing to apply a working production router over a slow path is the
+worse trade, so it is now a warning. `validateRouterConfig()` returns
+`{errors, warnings}` and both entry points print the warnings.
+
+### Fixed — backup reported interfaces the device was not using
+
+Three defects found by round-tripping a live production router:
+
+- **RouterOS internal ids leaked into `lan.ports`.** A bridge port whose
+  interface no longer resolves prints as `*2`. The widened port match added in
+  v6.1.1 swept those up, so a backup could contain `interface=*2`, which is not
+  usable in a config.
+- **Disabled radios were backed up.** `print detail` never emits
+  `disabled=yes`; disabled shows as an `X` in the flag field, so the existing
+  check never matched and a disabled radio's SSIDs were reported as though the
+  device were broadcasting them.
+- **Band settings for a disabled radio were reported**, putting channel and
+  width into the backup that the source config never declared.
+
+With these fixed, a backup of a production router round-trips exactly.
+
+### Fixed — third review round (Codex): 8 findings
+
+**`applyBandSettings()` was still injectable (Critical).** The v6.1.2 encoding
+pass covered `lib/router.js` and `configureWifiInterface()`, but missed this
+function, which interpolates `txPower`, `width`, `country` and the interface
+name straight into a command. It is called from five places in
+`lib/capsman.js`, so this affected the AP roles, not just the router role.
+
+**A disabled radio carrying a comment read as enabled.** The flag-field regex
+required a `key=value` on the same line, but RouterOS can put a `;;;` comment
+between the flags and the first property. Now parsed independently, with the
+`X`-inside-a-value false positive covered by tests.
+
+**Records past index 5 were merged or lost.** The WiFi interface scan treated
+any trimmed line starting with `0`-`5` as a new record. Two radios plus four
+virtual SSIDs is six interfaces, so real devices hit this: later interfaces
+merged into their predecessor and a continuation line beginning with a digit
+split a record in half. It now uses the same splitter as every other reader.
+
+**The probe/resolver warning promised a fallback that might not exist.**
+Downgrading the overlap to a blanket warning went too far the other way.
+Severity now depends on what is actually left standing:
+
+| Situation | Result |
+|---|---|
+| Some resolver is not a probe target | Warning — a fallback exists |
+| Pinned resolvers span two or more uplinks | Warning — one stays reachable |
+| Every resolver pinned to a single uplink | **Error** — that uplink failing takes DNS out |
+
+**The VLAN-unset fallback assumed success.** If a RouterOS build rejects
+`!datapath.vlan-id`, the retry cannot clear an existing VLAN. It now reads the
+interface back and reports the interface as still tagged, with the manual
+command, instead of reporting success.
+
+**Orphaned bridge ports and unsupported names are now distinguished.** An
+internal id such as `*2` is skipped quietly — it is not usable in a config — but
+a real interface name this YAML format cannot express is reported, because
+silently dropping a live LAN port from a backup is worse than saying so.
+
+### Known: the AP roles still interpolate raw values
+
+The encoding work so far covers `lib/router.js` and `lib/wifi-config.js`. A
+repo-wide sweep found roughly forty further sites in `lib/configure.js`,
+`lib/infrastructure.js` and `lib/capsman.js` — bond names, interface names,
+VLAN ids, syslog server and topics, device identity, MAC addresses — that still
+interpolate configuration values directly.
+
+These predate the router role and are lower risk in practice: the values are
+low-entropy identifiers unlikely to contain quotes, and the config author
+already holds the device credentials. They are not fixed here because those
+paths run against a production access-point fleet that this change set has no
+way to test. Tracked rather than quietly half-done.
+
 ### Tests
 
-`test/router.test.js` grows to 38 assertions, adding command-argument safety
+49 assertions, up from 39. New coverage for the backup record parsing (flagged
+and unflagged records, `;;;` comments, `X` inside a value, eight-record
+splitting), band-setting injection, and each branch of the overlap severity
+rule.
+
+### Superseded
+
+`test/router.test.js` grows to 39 assertions, adding command-argument safety
 (quote, dollar sign, semicolon and `[find]` injection attempts against both
 quoted and unquoted positions) and the validation gaps above.
 
-### Not verified on hardware
+### Verified on hardware
 
-As with v6.1.1, these are code-verified and unit-tested only. The VLAN unset
-syntax and the new postcondition checks are the two most worth confirming on a
-device.
+Exercised against a production Chateau LTE6 (RouterOS 7.18.2) running wired
+Ethernet with LTE failover:
+
+- The `!datapath.vlan-id` unset form is accepted; the fallback was not needed.
+- All five postcondition checks pass on a healthy router.
+- A second apply converges with no changes, and DHCP leases survive it.
+- Backup round-trips exactly against the live config.
+- Applying while the primary uplink is down keeps both routes and does not
+  interrupt traffic.
+
+Connectivity was never lost at any point during the test.
 
 ### Files
 - `lib/routeros-args.js` — new; the one place command arguments are encoded
