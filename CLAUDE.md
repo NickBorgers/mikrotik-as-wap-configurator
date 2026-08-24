@@ -19,6 +19,7 @@
 - `lib/access-list.js` - WAP locking via access-list rules
 - `lib/router.js` - Router role: multi-WAN failover, NAT, DHCP server, DNS, firewall
 - `lib/validate-router.js` - Shared router validation (used by BOTH apply entry points)
+- `lib/routeros-args.js` - Command-argument encoding/validation (use for EVERY device command value)
 - `test/router.test.js` - Router regression tests (`npm test`)
 - `router.example.yaml` - Example router configuration (multi-WAN failover)
 - `config.yaml` - Active device configuration (gitignored, contains credentials)
@@ -376,6 +377,28 @@ const BAND_TO_INTERFACE = {
 - No interface ever gets a NAMED datapath. `configureWifiInterface()` writes `datapath.bridge=... datapath.vlan-id=N` inline. Read the VLAN off the interface with `/(?:datapath)?\.vlan-id=(\d+)/` - a named-datapath lookup always returns nothing.
 - `backup.js` deletes `managementInterfaces`/`disabledInterfaces` for routers. Any consumer must guard for that; `backup-multiple-devices.js` crashed on it.
 - Run `npm test` (`test/router.test.js`) before touching parsing or validation. Its fixtures are real captured RouterOS output.
+
+**NEVER Interpolate Config Values Into Device Commands (v6.1.2)**
+- Use `lib/routeros-args.js` for EVERY value that reaches a device command. `escapeMikroTik()` alone is not enough and was not wired up at all in `lib/router.js` before v6.1.2.
+- Two contexts, two treatments:
+  - Quoted (`comment="..."`, `password="..."`): wrap with `q()`, which escapes `\`, `"` and `$`.
+  - Unquoted (`interface=ether1`, `distance=2`, `lease-time=12h`): escaping cannot help. Use `ifaceName()`, `ipv4()`, `cidr()`, `ipRange()`, `duration()`, `integer()`, `ipv4List()`. They THROW on anything unexpected - that is deliberate, a bad value must stop the apply.
+- This is not hypothetical for legitimate configs: an ISP PPPoE password containing `"` or `$` produced a malformed command.
+
+**Validate Normalized Values, Not What The User Typed**
+- `normalizeWans()` fills in `distance` and `probe`. Validating only explicit fields let an implicit default collide with an explicit one, and let the common `lan.dns: [8.8.8.8]` + default probe `8.8.8.8` case through.
+- `lib/validate-router.js` calls `normalizeWans()` and checks the result.
+
+**Router Role: Ownership and Verification Rules (v6.1.2)**
+- Delete ONLY what carries this tool's comment. `removeStaleLanAddresses()` removes just `router:lan` and the factory `defconf` address; static WAN removal is scoped to `wan:<name>`. A hand-added recovery address on the bridge must survive.
+- Never delete the old LAN address until the new one is READ BACK from the device. `addLanAddress()` returns a boolean and `configureRouter()` must honour it.
+- Never add the firewall drop rule until `router:input-lan` is confirmed present. `execWithWarning()` swallows failures, so "we issued the command" is not evidence.
+- Resolve all WAN gateways BEFORE removing any routes, and replace each uplink's routes independently. Removing everything up front made an apply during an outage strip a down uplink's routes with nothing to restore.
+- `verifyRouterState()` runs at the end and THROWS on unmet postconditions. Without it, apply reported success with no route, no NAT and no DHCP.
+
+**RouterOS `set` Does Not Clear Unspecified Properties**
+- Omitting `datapath.vlan-id` leaves the old VLAN in place, so a tagged SSID could never become untagged. Use the `!datapath.vlan-id` unset form.
+- That syntax is not confirmed across all RouterOS builds and this path configures every SSID for every role, so `configureWifiInterface()` retries without it on a syntax error rather than failing the apply.
 
 ### MikroTik RouterOS v7 WiFi Quirks
 

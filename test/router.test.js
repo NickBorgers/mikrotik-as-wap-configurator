@@ -139,6 +139,32 @@ test('comments render as ;;; lines, not comment="..."', () => {
   assert.strictEqual(real.match(/comment="([^"]+)"/), null, 'detail output has no comment= form');
 });
 
+console.log('\n=== Command argument safety ===');
+const args = require('../lib/routeros-args');
+test('q() neutralises a quote, so a value cannot end the string', () => {
+  // An ISP password containing a quote used to produce a malformed command;
+  // a crafted one could append further commands.
+  const out = args.q('pa"ss;word');
+  assert.strictEqual(out, '"pa\\"ss;word"');
+  assert.ok(!/[^\\]"/.test(out.slice(1, -1)), 'no unescaped quote survives inside the string');
+});
+test('q() escapes dollar signs so RouterOS does not expand them', () => {
+  assert.strictEqual(args.q('pa$$word'), '"pa\\$\\$word"');
+});
+test('unquoted positions reject anything but a plain identifier', () => {
+  assert.strictEqual(args.ifaceName('ether1'), 'ether1');
+  assert.throws(() => args.ifaceName('ether2; /ip firewall filter remove [find]'), /Unsafe or malformed/);
+  assert.throws(() => args.ifaceName('ether2 comment=x'), /Unsafe or malformed/);
+});
+test('addresses, ranges and durations are checked, not escaped', () => {
+  assert.throws(() => args.cidr('999.999.999.999/99'), /Unsafe or malformed/);
+  assert.throws(() => args.ipv4('8.8.8.8; /user add name=x'), /Unsafe or malformed/);
+  assert.throws(() => args.duration('12h; /user add name=x'), /Unsafe or malformed/);
+  assert.throws(() => args.ipRange('1.1.1.1-2.2.2.2 extra=1'), /Unsafe or malformed/);
+  assert.strictEqual(args.ipv4List(['1.1.1.1', '8.8.8.8']), '1.1.1.1,8.8.8.8');
+  assert.throws(() => args.ipv4List(['1.1.1.1', 'evil']), /Unsafe or malformed/);
+});
+
 console.log('\n=== Validation ===');
 test('accepts a well-formed config', () => {
   assert.deepStrictEqual(validateRouterConfig({
@@ -171,12 +197,49 @@ test('rejects a probe address that is also a resolver', () => {
   });
   assert.ok(e.some(x => /probe target and a lan.dns resolver/.test(x)));
 });
-test('rejects duplicate distances', () => {
+test('rejects duplicate explicit distances', () => {
   const e = validateRouterConfig({
     lan: { address: '192.168.80.1/24' },
     wan: [{ name: 'a', interface: 'e1', distance: 1 }, { name: 'b', interface: 'e2', distance: 1 }]
   });
-  assert.ok(e.some(x => /share distance/.test(x)));
+  assert.ok(e.some(x => /end up at distance/.test(x)));
+});
+test('rejects an implicit distance colliding with an explicit one', () => {
+  // 'a' has no distance, so it defaults to 1 - the same as 'b'. Checking only
+  // what the user typed let this through.
+  const e = validateRouterConfig({
+    lan: { address: '192.168.80.1/24' },
+    wan: [{ name: 'a', interface: 'e1' }, { name: 'b', interface: 'e2', distance: 1 }]
+  });
+  assert.ok(e.some(x => /end up at distance 1/.test(x)));
+});
+test('rejects a default-assigned probe that is also a resolver', () => {
+  // No explicit probe, so 'a' gets 8.8.8.8 by default - which is also the
+  // configured resolver.
+  const e = validateRouterConfig({
+    lan: { address: '192.168.80.1/24', dns: { servers: ['8.8.8.8'] } },
+    wan: [{ name: 'a', interface: 'e1' }]
+  });
+  assert.ok(e.some(x => /assigned by default/.test(x)));
+});
+test('rejects duplicate uplink names', () => {
+  const e = validateRouterConfig({
+    lan: { address: '192.168.80.1/24' },
+    wan: [{ name: 'a', interface: 'e1', distance: 1 }, { name: 'a', interface: 'e2', distance: 2 }]
+  });
+  assert.ok(e.some(x => /both named/.test(x)));
+});
+test('rejects a syntactically valid but impossible CIDR', () => {
+  const e = validateRouterConfig({ lan: { address: '999.999.999.999/99' }, wan: [{ interface: 'e1' }] });
+  assert.ok(e.some(x => /not valid CIDR/.test(x)));
+});
+test('rejects a malformed pool and lease time', () => {
+  const e = validateRouterConfig({
+    lan: { address: '192.168.80.1/24', dhcpServer: { pool: 'not-a-range', leaseTime: 'forever' } },
+    wan: [{ name: 'a', interface: 'e1' }]
+  });
+  assert.ok(e.some(x => /pool .* must look like/.test(x)));
+  assert.ok(e.some(x => /leaseTime .* must look like/.test(x)));
 });
 test('rejects static and pppoe uplinks missing required fields', () => {
   const e = validateRouterConfig({
