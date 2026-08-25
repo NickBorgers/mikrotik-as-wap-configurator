@@ -127,6 +127,9 @@ async function main() {
         console.log(`  Role: router`);
         console.log(`  LAN: ${config.lan?.address || 'unset'}`);
         console.log(`  Uplinks: ${(config.wan || []).map(w => `${w.name}(${w.interface})`).join(', ') || 'none'}`);
+        if (config.notify?.url) {
+          console.log(`  WAN change notifications: ${config.notify.url}`);
+        }
       } else {
         const mgmtDisplay = (config.managementInterfaces || []).map(iface => {
           if (typeof iface === 'string') {

@@ -296,6 +296,7 @@ const BAND_TO_INTERFACE = {
     ports: [ether2, ether3, ether4, ether5]
     dhcpServer: {pool: 192.168.80.100-192.168.80.200, leaseTime: 12h}
     dns: {servers: [1.1.1.1, 8.8.8.8], allowRemoteRequests: true}
+  notify: {url: https://ntfy.sh/topic, title: office router failover, interval: 30s}  # optional
   wan:
     - {name: primary, interface: ether1, type: dhcp, distance: 1, probe: 8.8.8.8}
     - {name: backup, interface: lte1, type: lte, apn: fast.t-mobile.com, distance: 2, probe: 1.1.1.1}
@@ -317,11 +318,42 @@ const BAND_TO_INTERFACE = {
 - Every uplink gets `use-peer-dns=no` and the router uses `lan.dns.servers`. Keeping ISP resolvers means that after failover, routing works but every lookup times out - which reads as a failed failover and is very hard to diagnose.
 - Each uplink needs its OWN probe address. Two uplinks sharing one probe fight over the same probe route. Validation rejects this.
 
+**Router Role: WAN Failover Notification (Added v6.2.0)**
+- Optional `notify` block on a `role: router` config. Installs a `wan-notify` script plus a scheduler of the same name, both commented `router:wan-notify`. Absent block = both removed, so deleting the block turns it off.
+- Shape: `notify: {url, title?, interval?, checkCertificate?}`. `url` is any http(s) POST target; `title` becomes an `X-Title:` header (ntfy renders it); `interval` defaults to `30s`; `checkCertificate` defaults to FALSE.
+- Message body: `<identity> WAN: <prev uplink> -> <cur uplink>`, using the names from the `wan` block.
+- Implemented in `lib/router.js` (`wanNotifyScript`, `configureWanNotify`, `backupWanNotify`, `parseDeviceMode`).
+
+**`:global` DOES NOT PERSIST BETWEEN SCHEDULER RUNS (the trap this feature is built around)**
+- A `:global` set by a script the SCHEDULER runs is discarded before the next tick. Verified: after clearing it and letting the scheduler tick repeatedly, the variable was absent from `/system/script/environment` entirely.
+- The same script run by hand with `/system script run` DOES persist it. So the bug looks like it works in every interactive test. Do not "fix" the comment-based state back into a global.
+- State is stored in the script object's own `comment`: `router:wan-notify state=<uplink>`. It is config, so it survives a reboot (a global does not), and it is written only on a real change, so there is no flash wear.
+- Read it with `[/system script get $id comment]`. Confirmed the write is attributed to `scheduler:wan-notify`, so a scheduler-run script really can persist its own state this way.
+
+**Device-mode Can Block This Entirely**
+- On a Chateau LTE6 in `mode: home`, BOTH `fetch` and `scheduler` are disabled. `/system/scheduler/add` fails with "failure: not allowed by device-mode"; `/tool/fetch` fails the same way at runtime.
+- Unlock: `/system/device-mode/update scheduler=yes fetch=yes`, then a PHYSICAL power cycle or reset-button press within 5 minutes. No tool can do that step.
+- `configureWanNotify()` reads `/system/device-mode/print` FIRST and fails with that instruction rather than surfacing the low-level error. Everything else in the apply still lands; the problem is reported through `configureRouter()`'s postcondition list.
+- `/tool/netwatch` is NOT device-mode gated, if a future feature needs a scheduler-free trigger.
+- Parse the flags with `parseDeviceMode()`. A device that reports no device-mode at all returns null, which means "cannot tell", not "blocked".
+
+**Notifier Implementation Details (all verified on hardware)**
+- `check-certificate=no` is the default because a factory device has ZERO certificates (`/certificate/print count-only` = 0) and this one had ~292KiB of flash free, too little for a CA bundle.
+- `output=none` on `/tool fetch`, for the same flash reason.
+- Advance the stored state ONLY inside the `:do {...}` block, after the fetch. A failed send then retries on the next tick instead of being lost - which is exactly the failover that took the internet with it. Log both outcomes with `:log`.
+- Detect the active uplink from the routes the role already writes: `[:len [/ip route find comment="wan:<name> default" active=yes]] > 0`. Emit one `:if` per uplink, WORST distance first, so the most preferred active uplink wins the last assignment. `cur` starts at `"none"` so a total outage is a state of its own.
+- `/system/script/print detail` output CONTAINS THE SOURCE, so grepping the record for `state=` matches the code that writes the comment. Read the comment field: `:foreach s in=[/system script find comment~"^router:wan-notify"] do={:put [/system script get $s comment]}`.
+- A script body cannot be sent with real newlines (they end the command). `scriptSource()` in `lib/routeros-args.js` escapes with `escapeMikroTik()` FIRST and rewrites newlines to `\n` second. `$` becomes `\$` on the wire and lands back as `$` in the stored source, so script variables survive.
+- Re-apply preserves the stored state when it still names a configured uplink, so applying does not itself fire a notification. A fresh install deliberately sends `unknown -> <uplink>` on the first tick, which proves the whole path works.
+- A `wan-notify` script or scheduler that is NOT commented `router:wan-notify` belongs to someone else. Report it and stop; do not add over it.
+- A comma in `notify.title` would split the RouterOS `http-header-field` into a second header. Validation rejects it.
+- A POST to an unreachable endpoint took ~10s to give up and blocks the tick, so an interval under 10s warns.
+
 **Router Role: Interface Lists and Comment Conventions**
 - Maintains the `WAN` and `LAN` interface lists that RouterOS defconf already uses. One NAT rule (`out-interface-list=WAN`) and one firewall rule cover every uplink.
 - The `WAN` list member comment is the AUTHORITATIVE record: `wan:<name> type=... distance=... probe=... [apn=...]`.
 - Why: routes only exist while a link is up. Reading settings back from routes alone drops an unplugged uplink from the backup. The list member is always present.
-- Other comments: routes `wan:<name> probe` / `wan:<name> default`, NAT `router:masquerade`, filter `router:<purpose>`, DHCP/pool/address `router:lan`.
+- Other comments: routes `wan:<name> probe` / `wan:<name> default`, NAT `router:masquerade`, filter `router:<purpose>`, DHCP/pool/address `router:lan`, notifier `router:wan-notify [state=<uplink>]`.
 - Backup detects the role via the `router:masquerade` NAT rule, not via routes, for the same reason.
 - RouterOS `print detail` renders comments as `;;; <comment>` lines, NOT as `comment="..."`. Parse with `recordComment()` in `lib/router.js`. Getting this wrong silently returns nothing.
 - `/ip dns print` wraps a multi-server list onto unlabelled continuation lines. Collect lines until the next `label:`.

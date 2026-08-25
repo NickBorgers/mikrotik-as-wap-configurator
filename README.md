@@ -189,6 +189,7 @@ The script is **idempotent** and safe to run multiple times.
 - **Automatic failover** - Traffic moves to the next uplink when one dies
 - **Path-aware health checks** - Probes a real internet address, not just the next hop
 - **Full gateway stack** - NAT, DHCP server, DNS cache and a firewall
+- **Failover notifications** - Optional push message when the active uplink changes (`notify`)
 - See `router.example.yaml` for a complete configuration
 
 ### Enterprise Features
@@ -286,6 +287,57 @@ like the failover had failed.
 
 **The tool owns the default routes.** Every uplink is created with
 `add-default-route=no`, so nothing competes with the failover routes.
+
+### Getting told when it fails over
+
+Failover is silent by default: the router switches to LTE and everything keeps
+working, which is exactly the problem. You find out weeks later, from the data
+bill. Add a `notify` block and the device posts a message when the active
+uplink changes.
+
+```yaml
+notify:
+  url: https://ntfy.sh/your-topic-here   # any endpoint that accepts a POST
+  title: office router failover          # optional, sent as an X-Title header
+  interval: 30s                          # optional, how often it checks
+```
+
+The message names the uplinks from your own `wan` block, prefixed with the
+router's identity so one topic can carry several routers:
+
+```
+nick-office-router WAN: primary -> backup
+```
+
+This installs a `wan-notify` script and a scheduler of the same name, both
+commented `router:wan-notify`. Re-applying replaces them and nothing else;
+removing the block removes them.
+
+**Device-mode blocks this on a factory device.** RouterOS ships the Chateau
+LTE6 in `mode: home`, where both `fetch` and `scheduler` are disabled — the
+apply says so and skips this feature rather than failing with RouterOS's
+"not allowed by device-mode". To unlock, on the device:
+
+```
+/system/device-mode/update scheduler=yes fetch=yes
+```
+
+then power-cycle it or press the reset button **within five minutes**.
+RouterOS wants proof of physical access, so no tool can do that step for you.
+
+Three smaller things worth knowing:
+
+- **Certificate checking is off by default.** A factory device has no CA
+  certificates at all and often lacks the flash to import a bundle, so
+  `check-certificate=no` is what makes an HTTPS endpoint work out of the box.
+  Set `checkCertificate: true` once you have imported one.
+- **A failed send is retried, not lost.** The device only records the new
+  uplink after the POST succeeds, so a failover that took the internet with it
+  notifies as soon as the backup link is carrying traffic. Both outcomes are
+  logged: `/log print where message~"wan-notify"`.
+- **Detection lags by up to one `interval`** on top of the failover times
+  above. Keep the interval comfortably above 10 s, roughly how long
+  `/tool fetch` takes to give up on an unreachable endpoint.
 
 ### A limit worth knowing
 

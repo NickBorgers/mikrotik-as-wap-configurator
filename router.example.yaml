@@ -111,6 +111,62 @@ wan:
   #   probe: 208.67.222.222
 
 # ---------------------------------------------------------------------------
+# WAN change notification (optional)
+# ---------------------------------------------------------------------------
+# Push a message when the active uplink changes - wired to LTE, and back.
+# Leave this block out and nothing is installed. Remove it later and the
+# notifier is removed from the device on the next apply.
+#
+# notify:
+#   url: https://ntfy.sh/your-topic-here
+#     A plain HTTP POST target. ntfy is the easy one, but any endpoint that
+#     accepts a POST works. The message body is:
+#       <router identity> WAN: <previous uplink> -> <current uplink>
+#     using the uplink NAMES from the wan: block above.
+#
+#   title: office router failover
+#     Optional. Sent as an "X-Title:" header, which ntfy shows as the
+#     notification title. No commas - RouterOS separates header fields with
+#     them. Other endpoints can ignore the header.
+#
+#   interval: 30s
+#     Optional, defaults to 30s. How often the device checks. Detection is
+#     therefore up to one interval slower than the failover itself. Keep it
+#     comfortably above 10s: that is roughly how long /tool fetch takes to
+#     give up on an unreachable endpoint, and the check blocks meanwhile.
+#
+#   checkCertificate: false
+#     Optional, defaults to false. A factory device has NO CA certificates
+#     (`/certificate print count-only` returns 0) and often lacks the flash to
+#     import a bundle, so verification is off unless you have imported one.
+#
+# What it installs: a `wan-notify` script and a scheduler of the same name,
+# both commented "router:wan-notify". Re-applying replaces them; anything else
+# on the device is left alone.
+#
+# How it remembers which uplink was last active: in the script's own comment,
+# `router:wan-notify state=<uplink>`. Not a `:global` - a global set by a
+# script the SCHEDULER runs is discarded before the next tick, so every tick
+# would notify again. (It looks fine when tested by hand, because
+# `/system script run` does keep globals. That is the trap.) A comment is
+# config, so it also survives a reboot, and it is written only on a real
+# change.
+#
+# The state advances only after the POST succeeds, so a failover that took the
+# internet with it retries on the next tick instead of losing the message.
+# Both outcomes are logged: `/log print where message~"wan-notify"`.
+#
+# FIRST, ON A DEVICE IN device-mode `home` (the Chateau LTE6 ships this way),
+# BOTH `fetch` AND `scheduler` ARE DISABLED. Applying tells you so and stops
+# at this feature. To unlock, on the device:
+#
+#     /system/device-mode/update scheduler=yes fetch=yes
+#
+# then power-cycle it or press the reset button WITHIN 5 MINUTES. RouterOS
+# wants proof of physical access; no tool can do it for you. Check the current
+# state with `/system/device-mode/print`.
+
+# ---------------------------------------------------------------------------
 # WiFi (optional)
 # ---------------------------------------------------------------------------
 # A router with no WiFi is valid. Leave these out and the radios are untouched.
