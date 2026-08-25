@@ -58,6 +58,17 @@ lan:
   # failover cleanliness.
   # fasttrack: true
 
+  # TCP MSS clamping, on by default. An uplink narrower than 1500 bytes - PPPoE
+  # at 1492, most LTE bearers - needs each end told how much it may send. The
+  # normal way to learn that is path MTU discovery, which relies on an ICMP
+  # reply that many networks drop. When it is dropped, connections open and then
+  # die on the first full-size segment: small requests work, large ones stall.
+  # Clamping the outbound SYN says the limit up front, so the far end never
+  # sends a segment too big for the uplink.
+  # It costs nothing on a 1500-byte uplink, where it clamps to the same value.
+  # This changes segment size, never rate. A slow uplink stays slow.
+  # mssClamp: false
+
 # ---------------------------------------------------------------------------
 # WAN
 # ---------------------------------------------------------------------------
