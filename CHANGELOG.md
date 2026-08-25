@@ -1,5 +1,65 @@
 # Changelog
 
+## [6.2.1] - 2026-08-25 - MSS Clamping On WAN Uplinks
+
+The router role installed no TCP MSS clamp at all. On an uplink narrower than
+1500 bytes — PPPoE at 1492, some LTE bearers — that shows up as connections
+opening fine and then dying the moment real data flows: small requests work,
+large transfers stall.
+
+The usual defence is path MTU discovery, which depends on an ICMP
+"fragmentation needed" reply that plenty of networks drop. Clamping the MSS on
+the SYN says the limit up front instead, so the far end never sends a segment
+the link cannot carry.
+
+### What it installs
+
+One mangle rule on `chain=forward`, commented `router:mss-clamp`, matching
+`out-interface-list=WAN` with `new-mss=clamp-to-pmtu`. It is on by default and
+costs nothing on a 1500-byte uplink, where it clamps to the value already in
+use. Opt out with:
+
+```yaml
+lan:
+  mssClamp: false
+```
+
+### Why there is no ingress rule
+
+An earlier draft added a second rule on `in-interface-list=WAN` to cap what LAN
+clients send outbound. That rule was wrong and never shipped. `clamp-to-pmtu`
+derives the MSS from the route toward the packet's destination, so for an
+inbound SYN-ACK it computes against the LAN bridge — normally 1500 — and clamps
+to 1460 no matter how narrow the uplink is. It would have looked like it covered
+the upload direction while doing nothing.
+
+That direction is covered instead by the router's own ICMP "fragmentation
+needed" back to the LAN client. It is generated one hop away, so it is rarely
+the reply being filtered.
+
+### Replacing an existing rule is failure-safe
+
+A rule that has drifted — disabled by hand, edited to a fixed MSS, moved to
+another chain — may still be doing useful work, so it is never removed before
+the replacement is proven to exist. The new rule is added under
+`router:mss-clamp-staged`, read back and checked, and only then does the old
+rule go and the staged one take its name.
+
+If the process dies between those last two steps, the staged rule *is* the live
+clamp. The next apply adopts it by renaming rather than rebuilding, because
+deleting a proven-good rule risks leaving the gateway with none.
+
+A rule that is already correct is left completely untouched, so re-applying
+never briefly unclamps a working gateway.
+
+### Scope
+
+This changes segment size, never rate. A slow uplink stays slow. It is a
+robustness fix for MTU-constrained uplinks, not a throughput fix.
+
+Not yet verified on a genuinely MTU-constrained path: the uplink available for
+testing reports and carries a full 1500 bytes, so there was nothing to clamp.
+
 ## [6.2.0] - 2026-08-25 - WAN Failover Notifications
 
 Adds an optional `notify` block to `role: router`. When the active uplink

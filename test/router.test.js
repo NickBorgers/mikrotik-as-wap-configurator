@@ -13,7 +13,8 @@ const assert = require('assert');
 const {
   parseCidr, cidrContains, networkOf, defaultPoolFor,
   normalizeWans, wanMemberComment, parseWanMemberComment,
-  resolveHostAddress
+  resolveHostAddress, configureMssClamp, mssClampRuleIsCurrent, terseRecords,
+  parseTerseRecord
 } = require('../lib/router');
 const { parseCountry } = require('../lib/backup');
 const { validateRouterConfig } = require('../lib/validate-router');
@@ -614,6 +615,66 @@ function fakeDevice({ deviceMode = 'mode: home\r\nscheduler: yes\r\nfetch: yes\r
 
 const notifyConfig = { host: 'gw.example.net', notify: { url: 'https://ntfy.sh/topic', title: 'failover' } };
 
+console.log('\n=== MSS clamp validation ===');
+test('mssClamp accepts booleans and rejects anything else', () => {
+  const base = { lan: { address: '192.168.80.1/24' }, wan: [{ name: 'a', interface: 'ether1', type: 'dhcp' }] };
+  const ok = validateRouterConfig({ ...base, lan: { ...base.lan, mssClamp: false } });
+  assert.deepStrictEqual(ok.errors, [], `expected no errors, got: ${ok.errors.join('; ')}`);
+  // A stringy "false" out of YAML would pass the `!== false` check and clamp
+  // anyway, doing the opposite of what was written. It has to be rejected.
+  const bad = validateRouterConfig({ ...base, lan: { ...base.lan, mssClamp: 'false' } });
+  assert.ok(bad.errors.some(e => /mssClamp/.test(e)), 'a non-boolean mssClamp should be an error');
+});
+test('terseRecords counts records, not blank lines or headers', () => {
+  assert.strictEqual(terseRecords('').length, 0);
+  assert.strictEqual(terseRecords('Flags: X - disabled\n\n').length, 0, 'a header alone is not a record');
+  assert.strictEqual(terseRecords(' 0    chain=forward \n 1    chain=forward ').length, 2);
+});
+
+test('parseTerseRecord keeps quoted values whole', () => {
+  const f = parseTerseRecord(' 0    chain=forward comment="router:mss-clamp" protocol=tcp ');
+  assert.strictEqual(f.chain, 'forward');
+  assert.strictEqual(f.comment, 'router:mss-clamp', 'quotes must be stripped, value kept intact');
+  assert.strictEqual(f.protocol, 'tcp');
+});
+
+test('mssClampRuleIsCurrent rejects anything that is not the exact live rule', () => {
+  const ok = ' 0    chain=forward action=change-mss new-mss=clamp-to-pmtu passthrough=yes'
+    + ' protocol=tcp tcp-flags=syn out-interface-list=WAN comment="router:mss-clamp" ';
+  assert.ok(mssClampRuleIsCurrent(ok), 'the correct rule should be accepted');
+  // A disabled rule matches every field but does nothing. Accepting it is
+  // precisely the silent failure this predicate exists to prevent.
+  assert.ok(!mssClampRuleIsCurrent(ok.replace(' 0    ', ' 0  X ')), 'disabled must be rejected');
+  assert.ok(!mssClampRuleIsCurrent(''), 'empty is not a rule');
+
+  // SUPERSETS AND PREFIXES. These are the dangerous ones: each CONTAINS the
+  // expected text, so any substring-based check waves them through even though
+  // every one of them behaves differently from the intended rule.
+  const supersets = [
+    ['chain=forward', 'chain=forward-custom'],
+    ['out-interface-list=WAN', 'out-interface-list=WAN-backup'],
+    ['tcp-flags=syn', 'tcp-flags=syn,!ack'],
+    ['action=change-mss', 'action=change-mss-custom'],
+    ['new-mss=clamp-to-pmtu', 'new-mss=clamp-to-pmtu-ish']
+  ];
+  for (const [from, to] of supersets) {
+    assert.ok(!mssClampRuleIsCurrent(ok.replace(from, to)), `must reject ${to}`);
+  }
+
+  // An ingress match is the mistake this feature shipped once already, so a
+  // rule carrying one is rejected however well its other fields match.
+  assert.ok(!mssClampRuleIsCurrent(ok.replace('passthrough=yes', 'passthrough=yes in-interface-list=WAN')),
+    'a rule with an ingress match must be rejected');
+});
+
+test('omitting mssClamp is valid and leaves it on', () => {
+  const { errors: e } = validateRouterConfig({
+    lan: { address: '192.168.80.1/24' },
+    wan: [{ name: 'a', interface: 'ether1', type: 'dhcp' }]
+  });
+  assert.deepStrictEqual(e, [], `expected no errors, got: ${e.join('; ')}`);
+});
+
 (async () => {
   const installed = fakeDevice();
   const installProblems = await configureWanNotify(installed, notifyConfig, notifyWans);
@@ -693,6 +754,206 @@ const notifyConfig = { host: 'gw.example.net', notify: { url: 'https://ntfy.sh/t
     assert.strictEqual(badProblems.length, 1);
     assert.ok(/notify.url/.test(badProblems[0]));
     assert.ok(!rejected.commands.some(c => /remove|add/.test(c)), 'nothing was removed or added');
+  });
+
+  console.log('\n=== MSS clamp commands ===');
+
+  // A fake that can FAIL, and that tells the canonical query apart from the
+  // staged one. The clamp's job is to leave a live firewall in a known state,
+  // so the paths worth testing are the ones where a command errors or the
+  // device answers unexpectedly - not the happy path.
+  const RULE = ' 0    chain=forward action=change-mss new-mss=clamp-to-pmtu passthrough=yes'
+    + ' protocol=tcp tcp-flags=syn out-interface-list=WAN comment="router:mss-clamp" ';
+  const CANON_Q = 'comment="router:mss-clamp"';
+  const STAGED_Q = 'comment="router:mss-clamp-staged"';
+
+  // responses: [substringToMatch, replyOrError][] - first match wins, so list
+  // the staged query first (the canonical needle ends in a quote, so the two
+  // never collide, but explicit ordering documents the intent).
+  const device = (responses = []) => {
+    const sent = [];
+    return {
+      sent,
+      exec: async cmd => {
+        sent.push(cmd);
+        for (const [needle, reply] of responses) {
+          if (cmd.includes(needle)) {
+            if (reply instanceof Error) throw reply;
+            return reply;
+          }
+        }
+        return '';
+      }
+    };
+  };
+  const adds = d => d.sent.filter(c => c.includes('mangle add'));
+  const removesCanon = d => d.sent.filter(c => c.includes('mangle remove') && c.includes(CANON_Q));
+  const removesStaged = d => d.sent.filter(c => c.includes('mangle remove') && c.includes(STAGED_Q));
+
+  const fresh = device();
+  const freshProblems = await configureMssClamp(fresh, true);
+  test('a device with no rule gets one directly, with no staging dance', () => {
+    assert.deepStrictEqual(freshProblems, []);
+    assert.strictEqual(adds(fresh).length, 1, 'expected exactly one add');
+    assert.ok(adds(fresh)[0].includes(CANON_Q), 'a fresh add goes straight to the real comment');
+    assert.strictEqual(removesCanon(fresh).length, 0, 'there is no existing rule to remove');
+  });
+  test('the rule is a single WAN-egress rule, never an ingress one', () => {
+    const cmd = adds(fresh)[0];
+    assert.ok(cmd.includes('out-interface-list=WAN'), 'must clamp on WAN egress');
+    // clamp-to-pmtu computes from the route to the DESTINATION, so an ingress
+    // rule would clamp against the LAN bridge and quietly do nothing.
+    assert.ok(!cmd.includes('in-interface'), 'must NOT add an ingress rule');
+    assert.ok(cmd.includes('new-mss=clamp-to-pmtu'), 'a fixed MSS penalises a 1500 uplink');
+    assert.ok(/chain=forward/.test(cmd) && /tcp-flags=syn/.test(cmd));
+  });
+  test('objects are matched by EXACT comment, not a prefix pattern', () => {
+    // "~^router:mss-clamp" would also delete router:mss-clamp-custom.
+    for (const cmd of fresh.sent) {
+      assert.ok(!cmd.includes('~'), `must not use a regex match: ${cmd}`);
+    }
+  });
+
+  const correct = device([[CANON_Q, RULE]]);
+  const correctProblems = await configureMssClamp(correct, true);
+  test('an already-correct rule is left completely alone', () => {
+    assert.deepStrictEqual(correctProblems, []);
+    assert.strictEqual(adds(correct).length, 0, 're-applying must not churn the firewall');
+    assert.strictEqual(correct.sent.filter(c => c.includes('mangle remove')).length, 0,
+      'must not briefly unclamp a working gateway');
+  });
+
+  for (const [label, record] of [
+    ['disabled by hand', RULE.replace(' 0    ', ' 0  X ')],
+    ['edited to a fixed MSS', RULE.replace('new-mss=clamp-to-pmtu', 'new-mss=1360')],
+    ['moved to another chain', RULE.replace('chain=forward', 'chain=output')]
+  ]) {
+    const drifted = device([[STAGED_Q, RULE], [CANON_Q, record]]);
+    const problems = await configureMssClamp(drifted, true);
+    test(`a rule ${label} is replaced via staging, old rule removed last`, () => {
+      assert.deepStrictEqual(problems, []);
+      const order = drifted.sent.map((c, i) => [i, c]);
+      const stagedAdd = order.find(([, c]) => c.includes('mangle add') && c.includes(STAGED_Q));
+      const canonRemove = order.find(([, c]) => c.includes('mangle remove') && c.includes(CANON_Q));
+      const promote = order.find(([, c]) => c.includes('mangle set') && c.includes(STAGED_Q));
+      assert.ok(stagedAdd, 'the replacement must be staged first');
+      assert.ok(canonRemove, 'the old rule must be removed');
+      assert.ok(promote, 'the staged rule must be promoted to the real comment');
+      // The whole point: never destroy the working rule before the replacement
+      // is proven to exist.
+      assert.ok(stagedAdd[0] < canonRemove[0], 'staged add must precede removing the old rule');
+      assert.ok(canonRemove[0] < promote[0], 'promotion must come after removal');
+    });
+  }
+
+  const stageFails = device([
+    [STAGED_Q, RULE],
+    [CANON_Q, RULE.replace('new-mss=clamp-to-pmtu', 'new-mss=1360')]
+  ]);
+  // Make only the staged ADD fail.
+  const origExec = stageFails.exec;
+  stageFails.exec = async cmd => {
+    if (cmd.includes('mangle add')) { stageFails.sent.push(cmd); throw new Error('no such command'); }
+    return origExec(cmd);
+  };
+  const stageProblems = await configureMssClamp(stageFails, true);
+  test('a failed staged add leaves the existing rule in place', () => {
+    assert.strictEqual(stageProblems.length, 1, `expected one problem, got: ${stageProblems}`);
+    assert.ok(/left the existing one in place/i.test(stageProblems[0]), stageProblems[0]);
+    // A fixed-MSS rule is worse than clamp-to-pmtu but far better than nothing.
+    assert.strictEqual(removesCanon(stageFails).length, 0, 'the working rule must survive');
+  });
+
+  const stageBad = device([
+    [STAGED_Q, RULE.replace('chain=forward', 'chain=output')],
+    [CANON_Q, RULE.replace('new-mss=clamp-to-pmtu', 'new-mss=1360')]
+  ]);
+  const stageBadProblems = await configureMssClamp(stageBad, true);
+  test('a staged rule that reads back wrong is cleaned up, old rule kept', () => {
+    assert.ok(stageBadProblems.some(p => /failed verification/i.test(p)), stageBadProblems.join('; '));
+    assert.strictEqual(removesCanon(stageBad).length, 0, 'the existing rule must survive');
+    assert.ok(removesStaged(stageBad).length >= 1, 'the bad staged rule must be cleaned up');
+  });
+
+  // Interrupted mid-swap: canonical removed, staged verified and live.
+  const interrupted = device([[STAGED_Q, RULE], [CANON_Q, '']]);
+  const interruptedProblems = await configureMssClamp(interrupted, true);
+  test('an interrupted swap adopts the staged rule instead of rebuilding', () => {
+    assert.deepStrictEqual(interruptedProblems, []);
+    // Deleting a proven-good rule to add a fresh one would leave the gateway
+    // unclamped if that add failed - the failure staging exists to prevent.
+    assert.strictEqual(removesStaged(interrupted).length, 0, 'must not destroy the live clamp');
+    assert.strictEqual(adds(interrupted).length, 0, 'must not add a duplicate');
+    assert.ok(interrupted.sent.some(c => c.includes('mangle set') && c.includes(STAGED_Q)),
+      'the staged rule must be promoted to the canonical comment');
+  });
+
+  // Stranded staged rule that is NOT usable: clearing it must succeed.
+  const strandedBad = device([
+    [STAGED_Q, RULE.replace('chain=forward', 'chain=output')],
+    [CANON_Q, '']
+  ]);
+  const origStranded = strandedBad.exec;
+  strandedBad.exec = async cmd => {
+    if (cmd.includes('mangle remove') && cmd.includes(STAGED_Q)) {
+      strandedBad.sent.push(cmd);
+      throw new Error('permission denied');
+    }
+    return origStranded(cmd);
+  };
+  const strandedProblems = await configureMssClamp(strandedBad, true);
+  test('a stranded staged rule that cannot be cleared stops the apply', () => {
+    assert.ok(strandedProblems.some(p => /stranded/i.test(p)), strandedProblems.join('; '));
+    assert.strictEqual(adds(strandedBad).length, 0, 'must not stage on top of a collision');
+  });
+
+  // A correct canonical rule PLUS a stranded staged one: the duplicate must go.
+  const dupe = device([[STAGED_Q, RULE], [CANON_Q, RULE]]);
+  const dupeProblems = await configureMssClamp(dupe, true);
+  test('a stranded staged rule is cleared even when the real rule is correct', () => {
+    assert.deepStrictEqual(dupeProblems, []);
+    assert.strictEqual(removesStaged(dupe).length, 1, 'two active clamp rules must not persist');
+    assert.strictEqual(adds(dupe).length, 0);
+  });
+
+  const readFails = device([[CANON_Q, new Error('timeout')]]);
+  const readProblems = await configureMssClamp(readFails, true);
+  test('a failed read stops before touching the firewall', () => {
+    assert.strictEqual(readProblems.length, 1);
+    assert.strictEqual(adds(readFails).length, 0, 'must not add blind');
+    assert.strictEqual(readFails.sent.filter(c => c.includes('mangle remove')).length, 0,
+      'must not remove blind');
+  });
+
+  const off = device();
+  const offProblems = await configureMssClamp(off, false);
+  test('opting out removes the rule and confirms it is gone', () => {
+    assert.deepStrictEqual(offProblems, []);
+    assert.strictEqual(removesCanon(off).length, 1);
+    assert.strictEqual(adds(off).length, 0);
+    assert.ok(off.sent.some(c => c.includes('mangle print')), 'removal must be verified, not assumed');
+  });
+
+  const offStuckStaged = device([[STAGED_Q, RULE], [CANON_Q, '']]);
+  const stuckStagedProblems = await configureMssClamp(offStuckStaged, false);
+  test('opting out also notices a surviving STAGED rule', () => {
+    // Checking only the canonical comment would report a clean opt-out while a
+    // staged rule was still clamping.
+    assert.ok(stuckStagedProblems.some(p => /still present/i.test(p)),
+      stuckStagedProblems.join('; '));
+  });
+
+  const offStuck = device([[CANON_Q, RULE]]);
+  const stuckProblems = await configureMssClamp(offStuck, false);
+  test('opting out reports failure when the rule survives removal', () => {
+    // Reporting a clean apply while the rule is still live is the worst case.
+    assert.ok(stuckProblems.some(p => /still present/i.test(p)), stuckProblems.join('; '));
+  });
+
+  const offErrors = device([['mangle remove', new Error('permission denied')]]);
+  const offErrProblems = await configureMssClamp(offErrors, false);
+  test('opting out reports a removal error instead of swallowing it', () => {
+    assert.ok(/could not remove/i.test(offErrProblems.join('; ')), offErrProblems.join('; '));
   });
 
   console.log('\n=== Host resolution (lockout guard) ===');
