@@ -139,6 +139,9 @@ async function main() {
       const dist = wan.distance !== undefined ? wan.distance : '?';
       console.log(`  - ${wan.name || wan.interface}: ${wan.interface} (${wan.type || 'dhcp'}), distance ${dist}`);
     });
+    if (config.notify?.url) {
+      console.log(`WAN change notifications: POST to ${config.notify.url} every ${config.notify.interval || '30s'}`);
+    }
     if (config.ssids?.length) {
       console.log(`SSIDs to configure: ${config.ssids.length}`);
     }

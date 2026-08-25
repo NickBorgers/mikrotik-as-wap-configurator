@@ -1,5 +1,131 @@
 # Changelog
 
+## [6.2.0] - 2026-08-25 - WAN Failover Notifications
+
+Adds an optional `notify` block to `role: router`. When the active uplink
+changes — wired to LTE, and back — the device POSTs a short message to an
+endpoint you choose.
+
+Failover is silent by default, which is the actual problem with it: the router
+moves to LTE, everything keeps working, and you find out weeks later from the
+data bill.
+
+### Configuration
+
+```yaml
+role: router
+
+notify:
+  url: https://ntfy.sh/your-topic-here   # required; any http(s) POST target
+  title: office router failover          # optional; sent as an X-Title header
+  interval: 30s                          # optional; default 30s
+  checkCertificate: false                # optional; default false
+```
+
+The message body names the uplinks from your own `wan` block, prefixed with the
+router's identity so one topic can carry several routers:
+
+```
+nick-office-router WAN: primary -> backup
+```
+
+Leaving the block out installs nothing. Removing it later removes the notifier
+from the device on the next apply, so deleting the config really does turn it
+off. The settings round-trip through `backup-config.js` like everything else.
+
+### What it installs
+
+A `wan-notify` script and a scheduler of the same name, both commented
+`router:wan-notify` — the same comment-ownership convention the rest of the
+router role uses. Re-applying replaces them and leaves hand-added objects
+alone. A `wan-notify` object that does *not* carry that comment is reported and
+left untouched rather than overwritten.
+
+The active uplink is read from the routes the role already writes
+(`/ip route find comment="wan:<name> default" active=yes`), so there is no
+second source of truth about which uplink is preferred.
+
+### State lives in the script's comment, not in a `:global`
+
+This is the one detail that took hardware to get right.
+
+**A `:global` set by a script the scheduler runs is discarded before the next
+tick.** After clearing the variable and letting the scheduler run repeatedly, it
+was absent from `/system/script/environment` entirely. Every tick would see
+"unknown" and notify again.
+
+The trap is that the same script run by hand with `/system script run` *does*
+persist its globals, so the bug passes every interactive test.
+
+The state is therefore written into the script object's own comment,
+`router:wan-notify state=<uplink>`. That is configuration, so unlike a global it
+also survives a reboot, and it is written only when the uplink actually changes,
+so there is no flash wear.
+
+### A failed send is retried, not lost
+
+The stored state advances only *after* the POST succeeds. A failover that took
+the internet with it therefore notifies as soon as the backup link is carrying
+traffic, instead of being swallowed. Both outcomes are logged:
+
+```
+/log print where message~"wan-notify"
+```
+
+A total outage resolves to the state `none`, which is a transition of its own
+rather than a stale "still on primary".
+
+### RouterOS device-mode blocks this on a factory device
+
+The Chateau LTE6 ships in `mode: home`, where **both `fetch` and `scheduler` are
+disabled**. `/system/scheduler/add` fails outright with "failure: not allowed by
+device-mode", and `/tool/fetch` fails the same way at runtime.
+
+Applying now checks `/system/device-mode/print` first and stops at this feature
+with the fix spelled out, rather than surfacing RouterOS's error:
+
+```
+/system/device-mode/update scheduler=yes fetch=yes
+```
+
+followed by a physical power cycle or reset-button press within five minutes.
+RouterOS wants proof of physical access and no tool can supply it. Everything
+else in the config is applied normally; only the notifier is skipped.
+
+### Smaller decisions
+
+- **`check-certificate=no` by default.** A factory device has zero CA
+  certificates (`/certificate print count-only` returns 0) and the test device
+  had ~292 KiB of flash free, far too little for a bundle. HTTPS works out of
+  the box; `checkCertificate: true` turns verification on once you have imported
+  a certificate, and warns that an empty store will fail every send.
+- **`output=none` on the fetch**, so nothing writes a result file to that flash.
+- **A comma in `title` is rejected.** RouterOS separates multiple
+  `http-header-field` values with commas, so a comma would split the header.
+- **An interval under 10 s warns.** A POST to an unreachable endpoint took about
+  ten seconds to give up, and the check blocks for that whole time.
+- **A plain `http://` endpoint warns.** For ntfy and most webhook services the
+  URL *is* the credential.
+
+### New in lib/routeros-args.js
+
+`scriptSource()` encodes a multi-line RouterOS script as a `source=` argument. A
+command reaches the device as one line, so real newlines would end the string
+mid-command; they are rewritten to RouterOS's `\n` escape *after* the body is
+escaped, which also leaves `$cur` intact (`\$` on the wire, `$` once stored).
+Two new patterns, `HTTP_URL` and `NOTIFY_TITLE`, are shared by the validator and
+the applier so a config applied as a library call is checked the same way.
+
+### Verified
+
+On the Chateau LTE6 (`D53G-5HacD2HnD&EG06-A`, RouterOS 7.18.2), against a local
+HTTP sink: the generated script round-tripped through escaping unchanged, read
+the live routes and resolved the active uplink correctly, delivered the POST
+with its `X-Title` header, advanced its comment, sent nothing at all on a second
+run, and — pointed at a dead endpoint — left the state untouched and logged that
+it would retry.
+
+
 ## [6.1.2] - 2026-08-23 - Command Injection and Lockout Fixes
 
 Fixes fourteen findings from a second, independent adversarial review (Codex)
