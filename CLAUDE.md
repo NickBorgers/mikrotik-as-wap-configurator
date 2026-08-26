@@ -349,6 +349,96 @@ const BAND_TO_INTERFACE = {
 - A comma in `notify.title` would split the RouterOS `http-header-field` into a second header. Validation rejects it.
 - A POST to an unreachable endpoint took ~10s to give up and blocks the tick, so an interval under 10s warns.
 
+**Router Role: MSS Clamping (on by default)**
+- ONE mangle rule on `chain=forward`, commented `router:mss-clamp`, matching
+  `out-interface-list=WAN` with `new-mss=clamp-to-pmtu`.
+- **Do NOT add a matching ingress rule.** `clamp-to-pmtu` derives the MSS from the route
+  toward the packet's DESTINATION. For a SYN-ACK matched on WAN ingress that destination
+  is the LAN bridge, normally 1500, so it would clamp to 1460 no matter how narrow the
+  uplink is. It looks like it covers the upload direction while doing nothing. An earlier
+  revision of this feature shipped exactly that rule; it was removed after review.
+- The upload direction is covered instead by the router's OWN ICMP "fragmentation needed"
+  back to the LAN client. That ICMP is generated locally, one hop away, so it is rarely
+  the one being filtered.
+- `new-mss=clamp-to-pmtu`, never a fixed value: a no-op on a 1500-byte uplink instead
+  of a permanent penalty. Verified valid syntax on RouterOS 7.18.2.
+- Opt-out via `lan.mssClamp: false`. Validation rejects a non-boolean, because the
+  setting is compared with `!== false` and a stringy `"false"` from YAML would read as
+  ON and silently do the opposite of what was written.
+- Objects are matched by EXACT comment, never `comment~"^router:mss-clamp"`. A prefix
+  pattern would also delete someone's `router:mss-clamp-custom`.
+- A rule that is already correct is left untouched. Re-applying does not remove and
+  re-add it, so a working gateway is never briefly unclamped.
+- Replacing a WRONG rule stages first: add under `router:mss-clamp-staged`, verify it
+  read back correct, remove the old rule, then rename the staged one. A drifted rule may
+  still be doing useful work (a fixed MSS beats no clamp), so it is never destroyed
+  before the replacement is proven to exist.
+- Recovery from an interrupted swap matters as much as the swap. If the process dies
+  after the canonical rule is removed but before promotion, the verified staged rule IS
+  the live clamp. The next apply ADOPTS it (renames it) rather than deleting it and
+  adding fresh - deleting a proven-good rule risks leaving the gateway with none if the
+  new add fails, which is the exact failure staging exists to prevent. Any other
+  stranded staged rule is cleared, and clearing it must SUCCEED before staging proceeds.
+- Two active clamp rules must never persist: a stranded staged rule is removed even when
+  the canonical rule is already correct.
+- The opt-out path removes BOTH comments and confirms BOTH are absent. Backup records
+  `mssClamp: false` only when BOTH are absent, so a mid-swap device is not recorded as
+  opted out - that would make the next apply deliberately remove a working rule.
+- `mssClampRuleIsCurrent()` compares EXACT field values, parsed as `key=value`, and
+  requires the rule to be enabled. Substring matching is not enough: `chain=forward-custom`
+  contains `chain=forward`, `out-interface-list=WAN-backup` contains `out-interface-list=WAN`,
+  and `tcp-flags=syn,!ack` contains `tcp-flags=syn`. All three look right and behave
+  differently. A rule carrying `in-interface`/`in-interface-list` is rejected outright.
+- Verification runs in BOTH states. Checking only when clamping is on would let a failed
+  removal pass while the rule is still live.
+- Backup records `mssClamp: false` only when the rule is absent. A read FAILURE is
+  left unrecorded rather than guessed at: writing `false` on error would silently strip
+  the clamp on the next apply.
+- This is a fix for uplinks where path MTU discovery is blocked (PPPoE at 1492, many
+  LTE bearers). It changes segment SIZE, never RATE. A slow uplink stays slow - see the
+  carrier-policer note below before blaming MSS for a throughput complaint.
+- NOT verified on a genuinely MTU-constrained uplink. The LTE bearer available for
+  testing reports and carries 1500 bytes, so `clamp-to-pmtu` had nothing to clamp.
+
+**Measuring A Backup WAN: The Router Does Not Use It (2026-08-25)**
+- The router's OWN traffic follows the main routing table, so it leaves via the ACTIVE
+  uplink. On a healthy router that is the wired WAN, never the LTE backup.
+- So `/tool/fetch` on the router does NOT test the backup link. It tests the primary.
+  A "router-originated over LTE" number collected that way is a wired number.
+- To force router traffic onto a backup uplink, mark it in `chain=output`:
+  ```
+  /routing/table add name=t-lte fib
+  /ip route add dst-address=0.0.0.0/0 gateway=lte1 routing-table=t-lte
+  /ip firewall mangle add chain=output dst-address=<test-ip> action=mark-routing \
+      new-routing-mark=t-lte passthrough=no
+  ```
+  Use `chain=prerouting src-address=<client>` for the same test from a LAN client. This
+  isolates one source/destination pair on the backup link with no outage.
+- Measure with `/interface get lte1 rx-byte` deltas, not with what the client reports.
+- `/tool/sniffer` and `/tool/torch` are blocked unless device-mode allows them. Counter
+  deltas, `/ping`, and firewall rule counters all still work and are usually enough.
+- `/tool/fetch ... output=user` silently CAPS the result at 64512 bytes. It looks like a
+  completed transfer. Use `output=none` to pull a whole file.
+
+**A Uniform Byte Rate Is A Carrier Policer, Not A Config Bug (2026-08-25)**
+- Symptom reported: LAN clients could not sustain a TCP transfer over the LTE backup.
+  Small requests fine, 1MB "stalled". Real cause: the SIM was policed to ~63 kbit/s.
+- What proved it, all measured on the live Chateau LTE6:
+  - Forwarded (chain=forward, masqueraded) 7.9 KB/s vs router-originated (chain=output)
+    8.1 KB/s. No forward-vs-output asymmetry at all.
+  - MSS swept 1360/1200/1000/800/536 -> throughput unchanged. Rules out path MTU.
+  - Disabling `router:forward-invalid` -> unchanged. Bypassing masquerade -> unchanged.
+    `change-ttl set:64` (carrier tethering detection) -> unchanged.
+  - APN swept `fast.t-mobile.com` / network-supplied / `h2g2`, and `ip-type=ipv4`. Each
+    produced a NEW bearer IP in a different block. All gave 7.68 KB/s. The cap follows
+    the SIM, not the session.
+  - Radio was healthy throughout: RSSI -54dBm, SINR 19dB, LTE B4@20MHz.
+- Discriminator worth reusing: ping the probe address DURING a transfer. RTT stayed
+  30-45ms with 0% loss while throughput sat at 63 kbit/s. A queue/shaper inflates RTT; a
+  policer drops without queueing. Flat RTT + low rate = policer = upstream, not local.
+- `h2g2` DID attach here, contrary to the older note above. It was simply as slow as the
+  rest, which is how it can look like it "did not work".
+
 **Router Role: Interface Lists and Comment Conventions**
 - Maintains the `WAN` and `LAN` interface lists that RouterOS defconf already uses. One NAT rule (`out-interface-list=WAN`) and one firewall rule cover every uplink.
 - The `WAN` list member comment is the AUTHORITATIVE record: `wan:<name> type=... distance=... probe=... [apn=...]`.
