@@ -1,5 +1,66 @@
 # Changelog
 
+## [6.2.2] - 2026-08-26 - Verify SSIDs Actually Come Up
+
+An apply could report complete success while an SSID was silently off the air.
+
+Writing an interface's configuration is not the same as the radio accepting it.
+A virtual AP created while its master is being reconfigured in the same pass can
+be rejected, and RouterOS records that only as a comment on the interface:
+
+```
+;;; failed to create interface
+2  BI wifi2-ssid2  wifi2  PartlyWork
+```
+
+The `set` that configured it returns no error, so the tool logged
+`✓ Configured wifi2-ssid2` and moved on. Observed on a Chateau LTE6 running
+RouterOS 7.18.2 with wifi-qcom: one of two configured SSIDs was missing for a
+day behind a fully green apply, and the verification step had no WiFi check at
+all to catch it.
+
+### What changed
+
+Every configured SSID is now read back after it is written.
+
+**Virtual APs** that are not running are disabled and re-enabled — that
+interface alone — and checked again, up to three attempts. The failure behaves
+like a race rather than a hard rejection, and bouncing the virtual AP brings it
+up. One that still will not come up is reported as an unmet requirement, so
+`role: router` applies now fail instead of claiming success. The device's own
+explanation is included when it left one.
+
+**Master radios are never bounced.** The primary SSID on each band is
+configured on the master, so this check runs against masters in normal
+operation, and a master carries every associated client — very possibly
+including whoever is running this tool over that radio.
+
+A master also has entirely benign reasons to read as not-running: a DFS channel
+availability check, a CAP still provisioning, CAPsMAN not finished activating
+it. But so does a bad channel or a driver fault, and treating every one of them
+as healthy would reintroduce this same bug on the primary SSID. So a
+not-yet-running master is **deferred**, then polled until it comes up, on a
+budget that covers a DFS availability check (~60s; up to 90s is allowed). A
+fixed short wait would have condemned every healthy DFS radio — especially
+under CAPsMAN, which applies channel settings immediately beforehand and can
+restart the check. The budget is shared across all deferred radios rather than
+applied to each in turn, so a controller with many inactive CAP radios does not
+multiply the wait, and each poll round reads every outstanding radio so none is
+judged on a stale result. Only a master still down when the budget runs out is
+reported.
+
+Whether an interface is virtual is decided by asking the device for its
+`master-interface`, not by guessing from the name. If that cannot be
+determined, the interface is treated as a master and left alone.
+
+Interfaces whose state cannot be read are reported without pointless retries,
+and a restart that itself fails is reported rather than swallowed.
+
+The check lives in the shared interface-configuration path, so the CAPsMAN
+roles get the retry and reporting too. Those roles have no postcondition
+mechanism, so a dead SSID there is surfaced as a prominent summary at the end
+of the run rather than failing the apply.
+
 ## [6.2.1] - 2026-08-25 - MSS Clamping On WAN Uplinks
 
 The router role installed no TCP MSS clamp at all. On an uplink narrower than

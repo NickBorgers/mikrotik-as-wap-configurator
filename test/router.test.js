@@ -17,6 +17,7 @@ const {
   parseTerseRecord
 } = require('../lib/router');
 const { parseCountry } = require('../lib/backup');
+const { ensureWifiInterfaceUp, recheckPendingMasters } = require('../lib/wifi-config');
 const { validateRouterConfig } = require('../lib/validate-router');
 
 let passed = 0, failed = 0;
@@ -954,6 +955,273 @@ test('omitting mssClamp is valid and leaves it on', () => {
   const offErrProblems = await configureMssClamp(offErrors, false);
   test('opting out reports a removal error instead of swallowing it', () => {
     assert.ok(/could not remove/i.test(offErrProblems.join('; ')), offErrProblems.join('; '));
+  });
+
+  console.log('\n=== WiFi interface comes up (VAP creation retry) ===');
+
+  // A VAP created while its master is being reconfigured can be rejected by the
+  // radio. RouterOS reports that ONLY as a comment on the interface - the `set`
+  // that configured it returns no error - so an apply that just writes config
+  // reports success while the SSID is silently off the air.
+  const FAILED_DETAIL = ' 2   BI ;;; failed to create interface\n'
+    + '        name="wifi2-ssid2" master-interface=wifi2 configuration.ssid="PartlyWork"';
+
+  // running=false until the Nth read, then true. `master` decides whether the
+  // device presents this interface as a virtual AP or as a master radio.
+  const wifiDevice = (upFromRead, opts = {}) => {
+    let reads = 0;
+    const sent = [];
+    return {
+      sent,
+      exec: async cmd => {
+        sent.push(cmd);
+        if (cmd.includes('master-interface')) {
+          if (opts.masterLookupThrows) throw new Error('no such item');
+          return opts.isMaster ? '' : 'wifi2';
+        }
+        if (cmd.includes('] running')) {
+          reads++;
+          if (opts.readThrows) throw new Error('no such item');
+          return reads >= upFromRead ? 'true' : 'false';
+        }
+        if (cmd.includes('disabled=') && opts.toggleThrows) throw new Error('permission denied');
+        if (cmd.includes('print detail')) return FAILED_DETAIL;
+        return '';
+      }
+    };
+  };
+  const noSleep = { sleep: async () => {}, delayMs: 0 };
+  const toggles = d => d.sent.filter(c => c.includes('disabled='));
+
+  const upFirstTry = wifiDevice(1);
+  const upFirstProblem = await ensureWifiInterfaceUp(upFirstTry, '/interface/wifi', 'wifi2-ssid2', noSleep);
+  test('an interface that is already running is left alone', () => {
+    assert.strictEqual(upFirstProblem, null);
+    assert.strictEqual(toggles(upFirstTry).length, 0, 'must not bounce a working interface');
+  });
+
+  const upAfterRetry = wifiDevice(2);
+  const retryProblem = await ensureWifiInterfaceUp(upAfterRetry, '/interface/wifi', 'wifi2-ssid2', noSleep);
+  test('a virtual AP that failed to create is retried and comes up', () => {
+    assert.strictEqual(retryProblem, null, `expected recovery, got: ${retryProblem}`);
+    assert.deepStrictEqual(
+      toggles(upAfterRetry).map(c => /disabled=(\w+)/.exec(c)[1]), ['yes', 'no'],
+      'recovery is disable-then-enable'
+    );
+  });
+
+  // THE SAFETY PROPERTY. The primary SSID on each band is configured on the
+  // MASTER radio, so this function is called with a master in normal operation.
+  // The master carries every associated client - very possibly including the
+  // operator running this tool over that radio. It must never be bounced.
+  // A master also has benign reasons to read not-running: DFS channel
+  // availability check, a CAP still provisioning, CAPsMAN not done activating.
+  const masterDown = wifiDevice(99, { isMaster: true });
+  const masterProblem = await ensureWifiInterfaceUp(masterDown, '/interface/wifi', 'wifi2', noSleep);
+  test('a MASTER radio that is not running is NEVER bounced', () => {
+    assert.strictEqual(toggles(masterDown).length, 0,
+      `must not touch a master radio, sent: ${JSON.stringify(toggles(masterDown))}`);
+  });
+  test('a not-running master is DEFERRED, never silently called healthy', async () => {
+    // Returning "fine" for every not-running master would reintroduce this very
+    // bug on the primary SSID. A bad channel or a driver fault reads exactly
+    // like a DFS check, so the only safe answer is to look again later.
+    const pendingMasters = [];
+    const deferred = wifiDevice(99, { isMaster: true });
+    const problem = await ensureWifiInterfaceUp(deferred, '/interface/wifi', 'wifi2',
+      { ...noSleep, pendingMasters });
+    assert.strictEqual(problem, null, 'deferred, so not an immediate failure');
+    assert.deepStrictEqual(pendingMasters, ['wifi2'], 'must be queued for re-check');
+    assert.strictEqual(toggles(deferred).length, 0, 'still must not bounce it');
+  });
+
+  test('a not-running master with nowhere to defer is reported, not passed', async () => {
+    const orphan = wifiDevice(99, { isMaster: true });
+    const problem = await ensureWifiInterfaceUp(orphan, '/interface/wifi', 'wifi2', noSleep);
+    assert.ok(problem, 'must not report a dead master as healthy');
+    assert.ok(/not running/i.test(problem), problem);
+    assert.strictEqual(toggles(orphan).length, 0, 'still must not bounce it');
+  });
+
+  const neverUp = wifiDevice(99);
+  const neverProblem = await ensureWifiInterfaceUp(neverUp, '/interface/wifi', 'wifi2-ssid2',
+    { ...noSleep, attempts: 3 });
+  test('a virtual AP that never comes up is reported, not passed', () => {
+    assert.ok(neverProblem, 'a dead SSID must produce a problem');
+    assert.ok(/not running/i.test(neverProblem), neverProblem);
+    // The device's own explanation is worth surfacing to whoever reads the log.
+    assert.ok(/failed to create interface/.test(neverProblem),
+      `expected the device's reason, got: ${neverProblem}`);
+  });
+  test('retries are bounded', () => {
+    const bounces = neverUp.sent.filter(c => c.includes('disabled=yes')).length;
+    assert.strictEqual(bounces, 2, `3 attempts means 2 retries, got ${bounces}`);
+  });
+
+  const unreadable = wifiDevice(1, { readThrows: true });
+  const unreadableProblem = await ensureWifiInterfaceUp(unreadable, '/interface/wifi', 'wifi2-ssid2', noSleep);
+  test('an unreadable interface is reported without blind retries', () => {
+    assert.ok(unreadableProblem, 'must report');
+    assert.ok(/could not be read back/i.test(unreadableProblem), unreadableProblem);
+    assert.strictEqual(toggles(unreadable).length, 0,
+      'no point bouncing an interface whose state cannot be read');
+  });
+
+  const stuck = wifiDevice(99, { toggleThrows: true });
+  const stuckProblem = await ensureWifiInterfaceUp(stuck, '/interface/wifi', 'wifi2-ssid2', noSleep);
+  test('a failed restart is reported rather than swallowed', () => {
+    assert.ok(/could not be restarted/i.test(stuckProblem), stuckProblem);
+  });
+
+  console.log('\n=== Deferred master re-check ===');
+
+  const recheckDevice = replies => {
+    const sent = [];
+    let i = 0;
+    return {
+      sent,
+      exec: async cmd => {
+        sent.push(cmd);
+        // Past the end of the script, keep answering with the last value.
+        const reply = replies[Math.min(i++, replies.length - 1)];
+        if (reply instanceof Error) throw reply;
+        return reply;
+      }
+    };
+  };
+  // A fake clock that advances only when the code sleeps, so the suite is
+  // deterministic and never waits out a real DFS check. Fresh per call.
+  const fastPoll = (extra = {}) => {
+    let t = 0;
+    return {
+      timeoutMs: 20000,
+      pollMs: 5000,
+      now: () => t,
+      sleep: async ms => { t += ms; },
+      ...extra
+    };
+  };
+
+  test('a master that came up during the apply is not reported', async () => {
+    const d = recheckDevice(['true']);
+    const problems = await recheckPendingMasters(d, ['wifi2'], fastPoll());
+    assert.deepStrictEqual(problems, [], 'a DFS check that finished is not a failure');
+  });
+
+  test('a DFS master that comes up mid-poll is not reported', async () => {
+    // CAC finishing after the first look is the common healthy case; a fixed
+    // short wait would have condemned it.
+    const d = recheckDevice(['false', 'false', 'true']);
+    const problems = await recheckPendingMasters(d, ['wifi2'], fastPoll());
+    assert.deepStrictEqual(problems, [], 'must keep polling, not give up at the first look');
+    assert.ok(d.sent.length >= 3, `expected repeated polling, got ${d.sent.length} reads`);
+  });
+
+  test('polling is bounded by the timeout', async () => {
+    const d = recheckDevice(['false']);
+    await recheckPendingMasters(d, ['wifi2'], fastPoll());
+    // 20s budget at 5s steps = 5 reads (t=0,5,10,15,20), never unbounded.
+    assert.ok(d.sent.length <= 6, `polling must be bounded, got ${d.sent.length} reads`);
+  });
+
+  test('a master still down at the end IS reported', async () => {
+    const d = recheckDevice(['false']);
+    const problems = await recheckPendingMasters(d, ['wifi2'], fastPoll());
+    assert.strictEqual(problems.length, 1, `expected a problem, got: ${problems}`);
+    assert.ok(/not on the air/i.test(problems[0]), problems[0]);
+  });
+
+  test('a transient read failure does not condemn a radio that recovers', async () => {
+    const d = recheckDevice([new Error('timeout'), 'true']);
+    assert.deepStrictEqual(await recheckPendingMasters(d, ['wifi2'], fastPoll()), [],
+      'one failed read mid-CAC must not be fatal');
+  });
+
+  test('a master that can never be re-checked is reported', async () => {
+    const d = recheckDevice([new Error('timeout')]);
+    const problems = await recheckPendingMasters(d, ['wifi2'], fastPoll());
+    assert.ok(/could not be re-checked/i.test(problems.join('; ')), problems.join('; '));
+  });
+
+  test('many down radios share ONE deadline, not one each', async () => {
+    // A controller with a fleet of dead CAP radios must not stall the apply for
+    // 90s per radio. CAC runs concurrently on the device anyway.
+    const d = recheckDevice(['false']);
+    const problems = await recheckPendingMasters(d, ['wifi1', 'wifi2', 'wifi3', 'wifi4'], fastPoll());
+    assert.strictEqual(problems.length, 4, 'every dead radio is still reported');
+    // 20s budget / 5s steps = 5 rounds x 4 radios = 20 reads. Per-radio budgets
+    // would be ~4x that.
+    assert.ok(d.sent.length <= 24, `expected one shared deadline, got ${d.sent.length} reads`);
+  });
+
+  test('a repeated master name is only checked once', async () => {
+    const d = recheckDevice(['false']);
+    const problems = await recheckPendingMasters(d, ['wifi2', 'wifi2'], fastPoll());
+    assert.strictEqual(problems.length, 1, 'duplicates must collapse');
+  });
+
+  test('SLOW READS consume the budget, not just sleeps', async () => {
+    // Counting only requested sleep time let this run far past its budget
+    // precisely when reads were slowest - the failure mode the timeout exists
+    // to bound. Here each read burns 8s of clock and nothing ever sleeps.
+    let t = 0;
+    const d = {
+      sent: [],
+      exec: async cmd => { d.sent.push(cmd); t += 8000; return 'false'; }
+    };
+    const problems = await recheckPendingMasters(d, ['wifi2'], {
+      timeoutMs: 20000, pollMs: 5000, now: () => t, sleep: async () => {}
+    });
+    assert.strictEqual(problems.length, 1, 'still reported');
+    // 20s budget at 8s per read = 3 reads. Without a wall clock this never ends.
+    assert.ok(d.sent.length <= 4, `slow reads must count, got ${d.sent.length} reads`);
+  });
+
+  test('a clock that never advances cannot spin forever', async () => {
+    // Belt and braces: the round cap bounds it even if a caller passes a
+    // no-op sleep and a frozen clock.
+    const d = recheckDevice(['false']);
+    const problems = await recheckPendingMasters(d, ['wifi2'], {
+      timeoutMs: 20000, pollMs: 5000, now: () => 0, sleep: async () => {}
+    });
+    assert.strictEqual(problems.length, 1);
+    assert.ok(d.sent.length <= 6, `round cap must bound it, got ${d.sent.length} reads`);
+  });
+
+  test('a round is atomic: every radio is read in the round that starts', async () => {
+    // Radios later in map order must not be judged on a stale previous-round
+    // result just because the deadline passed mid-round. Several DFS checks
+    // completing near the deadline would otherwise be reported dead.
+    let t = 0;
+    const upAt = { wifi1: 2, wifi2: 2, wifi3: 2, wifi4: 2 };
+    const reads = {};
+    const d = {
+      sent: [],
+      exec: async cmd => {
+        d.sent.push(cmd);
+        const name = /name="([^"]+)"/.exec(cmd)[1];
+        reads[name] = (reads[name] || 0) + 1;
+        t += 3000;                       // each read burns clock
+        return reads[name] >= upAt[name] ? 'true' : 'false';
+      }
+    };
+    const problems = await recheckPendingMasters(d, ['wifi1', 'wifi2', 'wifi3', 'wifi4'], {
+      timeoutMs: 20000, pollMs: 1000, now: () => t, sleep: async ms => { t += ms; }
+    });
+    // Round 2 runs t=13->25 and the 20s deadline passes partway through it.
+    // Cutting the round short there would leave wifi4 unresolved and reported
+    // dead even though it comes up in the very same round.
+    assert.deepStrictEqual(problems, [],
+      `all four came up in round 2; none should be reported: ${problems}`);
+    for (const name of Object.keys(upAt)) {
+      assert.ok(reads[name] >= 2, `${name} only got ${reads[name]} reads - round was cut short`);
+    }
+  });
+
+  test('nothing deferred means no device round trip', async () => {
+    const d = recheckDevice([]);
+    assert.deepStrictEqual(await recheckPendingMasters(d, [], fastPoll()), []);
+    assert.strictEqual(d.sent.length, 0, 'must not talk to the device for an empty list');
   });
 
   console.log('\n=== Host resolution (lockout guard) ===');

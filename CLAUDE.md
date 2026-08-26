@@ -349,6 +349,52 @@ const BAND_TO_INTERFACE = {
 - A comma in `notify.title` would split the RouterOS `http-header-field` into a second header. Validation rejects it.
 - A POST to an unreachable endpoint took ~10s to give up and blocks the tick, so an interval under 10s warns.
 
+**Writing WiFi Config Is Not The Same As The Radio Accepting It**
+- A virtual AP created while its master is being reconfigured in the same pass can be
+  rejected by the radio. RouterOS reports this ONLY as a comment on the interface
+  (`;;; failed to create interface`) and the configuring `set` returns NO error.
+- This bit us in production: `✓ Configured wifi2-ssid2` was logged while PartlyWork was
+  silently off the air for a day, behind an otherwise green apply.
+- `ensureWifiInterfaceUp()` in `lib/wifi-config.js` reads `/interface get [find name=X]
+  running` after every SSID is written. `running` is the authoritative signal - do not
+  parse the flag column out of `print detail` for this.
+- Recovery is disable-then-enable of THAT VIRTUAL AP ONLY, up to 3 attempts.
+- **NEVER bounce a master radio.** `configureWifiInterface()` is called with the MASTER
+  for the primary SSID on every band, so this code path runs against masters routinely.
+  A master carries every associated client, very possibly including the operator running
+  this tool over that radio. A master also reads not-running for benign reasons (DFS
+  availability check, CAP still provisioning, CAPsMAN not done activating), so it is
+  DEFERRED and then POLLED until it comes up, never bounced. Do NOT just return
+  "healthy" for a not-running master: a bad channel or driver fault reads identically to
+  a DFS check, and calling it fine puts the original bug back on the primary SSID.
+- The deferred check POLLS (default 90s budget, 5s interval); it is not a fixed sleep.
+  DFS CAC takes ~60s and `configureCapInterfacesOnController()` applies channel settings
+  immediately before the recheck, which can RESTART CAC. A short fixed wait reports every
+  healthy DFS radio as dead. A transient read failure mid-poll is not fatal either.
+  Only a master still down when the budget expires is reported.
+- That budget is SHARED across all deferred masters, not per-radio. CAC and provisioning
+  run concurrently on the device, so a per-radio budget would multiply the wait by the
+  fleet size - a controller with 20 dead CAP radios would stall an apply for half an hour.
+- The deadline is measured against a real CLOCK, not against time spent sleeping. Slow or
+  timing-out SSH reads burn real time too; counting only sleeps let the function overrun
+  its budget exactly when reads were slowest. `now` and `sleep` are injectable so tests
+  are deterministic, and a round cap means even a frozen clock cannot spin.
+- A poll ROUND IS ATOMIC: once it starts, every unresolved radio is read in it. Checking
+  the deadline mid-round judges the radios later in map order on their PREVIOUS round's
+  result, so several DFS checks finishing near the deadline would see the first radio
+  pass and the rest falsely reported dead. Check the deadline only BETWEEN rounds; the
+  overrun is bounded by one round's reads.
+- Virtual-vs-master is decided by asking the device for `master-interface`, never by
+  guessing from a `-ssidN` suffix. If that lookup FAILS: do not touch the interface, and
+  do not call it healthy either - report it, or a dead VAP hides behind a failed lookup.
+- A still-dead VIRTUAL AP becomes an unmet requirement so a `role: router` apply FAILS.
+  Reporting success for an SSID nobody can see is the bug being fixed.
+- CAPsMAN has NO postcondition mechanism, so there a dead SSID is surfaced as a loud
+  end-of-run summary instead. Do not claim CAPsMAN fails the apply - it does not.
+- Both CAPsMAN summary calls must sit BEFORE the success banner and in the catch block.
+  Placing one after the try/catch makes it dead code: the try returns and the catch
+  throws. That happened once already and was caught in review.
+
 **Router Role: MSS Clamping (on by default)**
 - ONE mangle rule on `chain=forward`, commented `router:mss-clamp`, matching
   `out-interface-list=WAN` with `new-mss=clamp-to-pmtu`.
