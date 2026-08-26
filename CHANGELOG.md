@@ -1,5 +1,45 @@
 # Changelog
 
+## [6.2.3] - 2026-08-26 - Fix: `get` Needs `:put` (6.2.2 Did Not Work)
+
+**6.2.2 did not work.** The SSID verification it added never functioned on real
+hardware, and it made applies fail spuriously. Upgrade straight to 6.2.3.
+
+A bare `/interface get [find name=X] running` prints **nothing** over an SSH
+exec. RouterOS returns the value to an interactive console, not to stdout. It
+has to be wrapped:
+
+```
+:put [/interface/get [find name="wifi2"] running]
+```
+
+6.2.2 sent the bare form for both of its queries. Every read came back as an
+empty string, so:
+
+- every interface looked not-running, and
+- every `master-interface` lookup looked empty, so every interface was
+  classified as a master radio.
+
+On a live Chateau LTE6 that produced an apply which reported a perfectly
+healthy master as `not running after 90s`, classified the virtual AP as a
+master, and therefore **never ran the retry the feature exists for**. The
+apply then failed with two unmet requirements while the WiFi was fine.
+
+### What changed
+
+Both queries are wrapped in `:put`. The command forms were verified against
+live hardware before release this time, rather than only against a test double.
+
+Two regression tests: one pins the query form, and one scans this module for
+any `exec()` sending a bare `get [find ...]`, so the whole class of bug is
+caught rather than the single instance.
+
+### Why the tests missed it
+
+The fake device returned canned values for whatever it was asked. It never
+checked that the command was one RouterOS would actually answer. A mock that
+answers a question the real device ignores will pass every time.
+
 ## [6.2.2] - 2026-08-26 - Verify SSIDs Actually Come Up
 
 An apply could report complete success while an SSID was silently off the air.

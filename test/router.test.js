@@ -17,7 +17,9 @@ const {
   parseTerseRecord
 } = require('../lib/router');
 const { parseCountry } = require('../lib/backup');
-const { ensureWifiInterfaceUp, recheckPendingMasters } = require('../lib/wifi-config');
+const {
+  ensureWifiInterfaceUp, recheckPendingMasters, runningQuery
+} = require('../lib/wifi-config');
 const { validateRouterConfig } = require('../lib/validate-router');
 
 let passed = 0, failed = 0;
@@ -957,6 +959,32 @@ test('omitting mssClamp is valid and leaves it on', () => {
     assert.ok(/could not remove/i.test(offErrProblems.join('; ')), offErrProblems.join('; '));
   });
 
+  console.log('\n=== RouterOS query FORM (get needs :put) ===');
+
+  // v6.2.2 shipped `/interface get [find name=X] running` with no `:put`. Over
+  // an SSH exec that prints NOTHING - RouterOS returns the value to an
+  // interactive console, not to stdout. Every read came back empty, so every
+  // interface looked not-running and every classification lookup looked empty.
+  // On live hardware it reported a healthy master as dead and treated a virtual
+  // AP as a master, so the retry never fired. The old tests could not catch it:
+  // the fake returned canned values and never checked the command form.
+  test('the running query is wrapped in :put', () => {
+    const cmd = runningQuery('wifi2-ssid2');
+    assert.ok(cmd.startsWith(':put ['), `a bare get prints nothing over SSH: ${cmd}`);
+    assert.ok(cmd.endsWith(']'), cmd);
+    assert.ok(cmd.includes('running'), cmd);
+    assert.ok(cmd.includes('name="wifi2-ssid2"'), cmd);
+  });
+
+  test('every device query this module sends is :put-wrapped', () => {
+    // Guards the whole class of bug, not just the one instance.
+    const src = require('fs').readFileSync(require.resolve('../lib/wifi-config'), 'utf8');
+    const bare = src.split('\n').filter(line =>
+      /exec\(/.test(line) && /\bget \[find/.test(line) && !/:put \[/.test(line));
+    assert.deepStrictEqual(bare, [],
+      `these send a bare get and will read back empty:\n${bare.join('\n')}`);
+  });
+
   console.log('\n=== WiFi interface comes up (VAP creation retry) ===');
 
   // A VAP created while its master is being reconfigured can be rejected by the
@@ -979,7 +1007,7 @@ test('omitting mssClamp is valid and leaves it on', () => {
           if (opts.masterLookupThrows) throw new Error('no such item');
           return opts.isMaster ? '' : 'wifi2';
         }
-        if (cmd.includes('] running')) {
+        if (cmd.includes('running')) {
           reads++;
           if (opts.readThrows) throw new Error('no such item');
           return reads >= upFromRead ? 'true' : 'false';

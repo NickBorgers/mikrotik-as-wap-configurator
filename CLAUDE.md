@@ -349,6 +349,19 @@ const BAND_TO_INTERFACE = {
 - A comma in `notify.title` would split the RouterOS `http-header-field` into a second header. Validation rejects it.
 - A POST to an unreachable endpoint took ~10s to give up and blocks the tick, so an interval under 10s warns.
 
+**RouterOS `get` MUST Be Wrapped In `:put` (learned the hard way in 6.2.2)**
+- `/interface get [find name=X] running` sent over an SSH exec prints NOTHING. RouterOS
+  returns the value to an interactive console, not to stdout. Always:
+  `:put [/interface/get [find name=X] running]`
+- 6.2.2 shipped the bare form. Every read came back empty, so every interface looked
+  not-running and every classification lookup looked empty. The apply reported a healthy
+  master as dead and never ran the VAP retry it existed to run.
+- Unit tests did NOT catch this: the fake answered whatever it was asked. A mock that
+  answers a question the real device ignores passes every time. When adding a NEW device
+  query, run it against real hardware, and assert the command FORM in a test.
+- `test/router.test.js` scans lib/wifi-config.js for `exec()` calls sending a bare
+  `get [find ...]`. Keep that guard.
+
 **Writing WiFi Config Is Not The Same As The Radio Accepting It**
 - A virtual AP created while its master is being reconfigured in the same pass can be
   rejected by the radio. RouterOS reports this ONLY as a comment on the interface
