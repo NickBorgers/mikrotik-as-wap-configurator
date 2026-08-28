@@ -1551,7 +1551,9 @@ test('omitting mssClamp is valid and leaves it on', () => {
       exec: async cmd => {
         sent.push(cmd);
         if (opts.fail && opts.fail(cmd)) throw new Error('permission denied');
-        if (/^\/interface list member print/.test(cmd)) return MEMBER_TERSE;
+        if (/^\/interface list member print/.test(cmd)) {
+          return opts.members !== undefined ? opts.members : MEMBER_TERSE;
+        }
         if (/^\/ip address print terse/.test(cmd)) {
           // '' models uplinks that are up but have no address yet - the case
           // where an allow entry cannot be proven safe.
@@ -1776,13 +1778,19 @@ test('omitting mssClamp is valid and leaves it on', () => {
     const seenIfaces = [];
     const dev = mgmtDevice({
       sessions: '0 when=2026-08-27 19:44:13 name=admin address=192.168.80.199 via=ssh group=full',
+      // A pppoe-only router: the WAN list holds the parent, and the address is
+      // on the client interface.
+      members: '6 comment=wan:fibre type=pppoe list=WAN interface=ether1 dynamic=no',
       wanAddresses: '0 address=203.0.113.9/32 interface=pppoe-fibre actual-interface=pppoe-fibre'
     });
     return readWanAddresses(dev, pppoeWans).then(res => {
       seenIfaces.push(...res.addresses);
-      assert.deepStrictEqual(res.unresolved.filter(i => i === 'pppoe-fibre'), [],
-        'pppoe-fibre must be recognised as resolved once it has an address');
       assert.ok(res.addresses.includes('203.0.113.9/32'), JSON.stringify(res));
+      // The REAL assertion: nothing is left unresolved. The parent ether1 never
+      // carries an address on a pppoe setup, so if it stayed in the watch set
+      // this router could never be hardened at all.
+      assert.deepStrictEqual(res.unresolved, [],
+        `the pppoe parent must not linger as unresolved: ${JSON.stringify(res)}`);
     });
   });
 

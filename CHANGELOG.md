@@ -183,8 +183,10 @@ A second review round found three more, all fixed:
   bound the LAN range. The LAN is not exempt: if an unresolved DHCP, LTE or
   PPPoE uplink later takes an address inside it, binding to that network admits
   the WAN exactly as an allow entry would. A PPPoE uplink's address also lands
-  on `pppoe-<name>` rather than the ethernet the config names, so that
-  interface is now derived — without it the uplink looks addressless forever.
+  on `pppoe-<name>` rather than the ethernet the config names, so the client
+  interface REPLACES the parent in the watch set — on a normal PPPoE setup the
+  parent never carries an address, so keeping both would leave the router
+  permanently unhardenable.
 
 One finding was accepted rather than fixed: a polling round that has already
 started runs to completion even past its deadline, so a round over many
