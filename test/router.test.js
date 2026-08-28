@@ -1008,6 +1008,7 @@ test('omitting mssClamp is valid and leaves it on', () => {
         sent.push(cmd);
         if (cmd.includes('master-interface')) {
           if (opts.masterLookupThrows) throw new Error('no such item');
+          if (opts.masterValue !== undefined) return opts.masterValue;
           return opts.isMaster ? '' : 'wifi2';
         }
         if (cmd.includes('running')) {
@@ -1039,6 +1040,16 @@ test('omitting mssClamp is valid and leaves it on', () => {
   test('an interface that is already running is left alone', () => {
     assert.strictEqual(upFirstProblem, null);
     assert.strictEqual(toggles(upFirstTry).length, 0, 'must not bounce a working interface');
+  });
+
+  const garbled = wifiDevice(99, { masterValue: 'invalid value for argument something' });
+  const garbledProblem = await ensureWifiInterfaceUp(garbled, '/interface/wifi', 'wifi2-ssid2', noSleep);
+  test('a garbled classification answer is NOT read as "virtual"', () => {
+    // Believing junk here means bouncing a MASTER radio and cutting every
+    // client, possibly including the operator's own link. Require an
+    // interface-name shape, not merely non-empty text.
+    assert.strictEqual(toggles(garbled).length, 0, 'must not toggle on an unrecognised answer');
+    assert.ok(garbledProblem, 'and must not call it healthy either');
   });
 
   const upAfterRetry = wifiDevice(2);
@@ -1465,13 +1476,31 @@ test('omitting mssClamp is valid and leaves it on', () => {
     // Captured from the live Chateau LTE6. Note `when=` carries a space, which
     // a naive whitespace split would turn into a bogus field.
     const real = '0 when=2026-08-27 19:44:13 name=admin address=192.168.80.199 via=ssh group=full';
-    assert.deepStrictEqual(activeSessionAddresses(real), [{ address: '192.168.80.199', via: 'ssh' }]);
+    const { sessions, unreadable } = activeSessionAddresses(real);
+    assert.deepStrictEqual(sessions, [{ address: '192.168.80.199', via: 'ssh' }]);
+    assert.deepStrictEqual(unreadable, []);
   });
 
   test('a console session is ignored - no IP restriction can affect it', () => {
     const out = '0 when=2026-08-27 19:44:13 name=admin via=local group=full\n'
       + '1 when=2026-08-27 19:45:00 name=admin address=192.168.80.5 via=winbox group=full';
-    assert.deepStrictEqual(activeSessionAddresses(out), [{ address: '192.168.80.5', via: 'winbox' }]);
+    const { sessions, unreadable } = activeSessionAddresses(out);
+    assert.deepStrictEqual(sessions, [{ address: '192.168.80.5', via: 'winbox' }]);
+    assert.deepStrictEqual(unreadable, [], 'a console session is safe to disregard, not unreadable');
+  });
+
+  test('a session we CANNOT parse is surfaced, never silently dropped', () => {
+    // The old code skipped these. A parseable session elsewhere then made the
+    // guard pass while an unreadable one - possibly this very connection - was
+    // never checked against the restriction.
+    const out = '0 when=2026-08-27 19:44:13 name=admin address=192.168.80.199 via=ssh group=full\n'
+      + '1 when=2026-08-27 19:45:00 name=admin address=fe80::1%ether1 via=winbox group=full\n'
+      + '2 when=2026-08-27 19:46:00 name=admin via=api group=full';
+    const { sessions, unreadable } = activeSessionAddresses(out);
+    assert.deepStrictEqual(sessions, [{ address: '192.168.80.199', via: 'ssh' }]);
+    assert.strictEqual(unreadable.length, 2,
+      'an IPv6 peer and an address-less session must both count as unreadable');
+    assert.ok(unreadable.every(u => u.raw), 'the raw record is kept so a human can see what it was');
   });
 
   console.log('\n=== Management plane: applying the restriction ===');
@@ -1523,7 +1552,11 @@ test('omitting mssClamp is valid and leaves it on', () => {
         sent.push(cmd);
         if (opts.fail && opts.fail(cmd)) throw new Error('permission denied');
         if (/^\/interface list member print/.test(cmd)) return MEMBER_TERSE;
-        if (/^\/ip address print terse/.test(cmd)) return ADDRESS_TERSE;
+        if (/^\/ip address print terse/.test(cmd)) {
+          // '' models uplinks that are up but have no address yet - the case
+          // where an allow entry cannot be proven safe.
+          return opts.wanAddresses !== undefined ? opts.wanAddresses : ADDRESS_TERSE;
+        }
         if (/^\/ip service print terse/.test(cmd)) return SERVICE_TERSE;
         if (/^\/user active print terse/.test(cmd)) {
           if (opts.sessionsThrow) throw new Error('timeout');
@@ -1702,12 +1735,34 @@ test('omitting mssClamp is valid and leaves it on', () => {
     sessions: '0 when=2026-08-27 19:44:13 name=admin address=192.168.80.199 via=ssh group=full'
   });
   const wideProblems = await configureManagementServices(wide, wideLan, MGMT_WANS, true);
-  test('a LAN wide enough to swallow the WAN is reported, and still restricted', () => {
-    // 192.168.0.0/16 contains the 192.168.4.24 WAN address. Dropping it would
-    // leave an empty list, which means no restriction at all - strictly worse.
-    // So it is applied and loudly reported; the firewall rule covers the gap.
+  test('a LAN wide enough to swallow the WAN binds NOTHING', () => {
+    // 192.168.0.0/16 contains the 192.168.4.24 uplink address. Binding to it
+    // would install an allow-list that ADMITS the WAN while reporting that
+    // management was locked to the LAN. Claiming a protection we are not
+    // providing is worse than not providing it, so nothing is bound and the
+    // firewall rule stays the honest single layer it already was.
     assert.ok(wideProblems.some(p => /Renumber the LAN/.test(p)), wideProblems.join('; '));
-    assert.strictEqual(wide.address.get('ssh'), '192.168.0.0/16');
+    assert.strictEqual(wide.address.get('ssh'), '',
+      'must not bind an allow-list that contains the uplink');
+  });
+
+  test('an allow entry is dropped when an uplink has no address yet', () => {
+    // A private range proves nothing - this device's own WAN is RFC1918. The
+    // only real check is against the address actually on the uplink, and a
+    // DHCP or LTE uplink can acquire one inside an allowed range moments later.
+    const pending = mgmtDevice({
+      sessions: '0 when=2026-08-27 19:44:13 name=admin address=192.168.80.199 via=ssh group=full',
+      wanAddresses: ''   // uplinks up, no addresses yet
+    });
+    return configureManagementServices(
+      pending,
+      { address: '192.168.80.1/24', management: { allow: ['10.9.0.0/16'] } },
+      MGMT_WANS, true
+    ).then(probs => {
+      assert.ok(probs.some(p => /lan\.management\.allow was ignored/.test(p)), probs.join('; '));
+      assert.strictEqual(pending.address.get('ssh'), '192.168.80.0/24',
+        'the LAN still binds; only the unprovable extra range is dropped');
+    });
   });
 
   console.log('\n=== Management plane: verification and self-heal ===');
@@ -1758,10 +1813,28 @@ test('omitting mssClamp is valid and leaves it on', () => {
 
   const setFails = mgmtDevice({ fail: cmd => /name="winbox"\] address=/.test(cmd) });
   const setFailProblems = await configureManagementServices(setFails, LAN, MGMT_WANS, true);
-  test('a service that cannot be bound is reported, and the rest still are', () => {
+  test('a failed bind ABORTS and rolls everything back', () => {
+    // The old behaviour was to report it and keep going. That leaves a device
+    // half-restricted: if the failure lands before ssh, every alternative
+    // recovery path is bound while the lifeline is not. A partial management
+    // restriction is worse than none, so the run is undone.
     assert.ok(setFailProblems.some(p => /Could not bind the winbox service/.test(p)),
       setFailProblems.join('; '));
-    assert.strictEqual(setFails.address.get('ssh'), '192.168.80.0/24', 'one failure must not abort the rest');
+    assert.strictEqual(setFails.address.get('ssh'), '',
+      'ssh must NOT be left bound after an aborted run');
+    for (const [name, value] of setFails.address) {
+      assert.strictEqual(value, '', `${name} should have been rolled back, got '${value}'`);
+    }
+  });
+
+  test('rollback restores what was there before, not just empty', () => {
+    // A device that already had a restriction must get THAT back, not blanked.
+    const preset = mgmtDevice({ fail: cmd => /name="winbox"\] address=/.test(cmd) });
+    preset.address.set('ssh', '10.5.0.0/16');
+    return configureManagementServices(preset, LAN, MGMT_WANS, true).then(() => {
+      assert.strictEqual(preset.address.get('ssh'), '10.5.0.0/16',
+        'the prior value must be restored, not cleared');
+    });
   });
 
   const l2Fails = mgmtDevice({ fail: cmd => /mac-server mac-winbox set/.test(cmd) });

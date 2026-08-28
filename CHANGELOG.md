@@ -137,6 +137,46 @@ before being relied on, and the tests assert command *form*, not just behaviour:
 - `/tool mac-server print terse` is a syntax error; those settings must be read
   with `:put [... get ...]`.
 
+### Hardened after review
+
+The first draft of this change could have permanently locked an operator out of
+a remote router. Review caught it, and these are the corrections:
+
+- **Every write is verified immediately, and a failure rolls the whole run
+  back.** Previously services were bound one after another and verified only at
+  the end. A failure partway through left a device half-restricted - and if it
+  landed before `ssh`, every alternative recovery path was bound while the
+  lifeline was not. The prior value of each service is recorded first, so a
+  rollback restores what was actually there rather than blanking it.
+- **The ssh self-heal now confirms the clear took.** It cleared the restriction
+  and assumed success. Since 6.2.4 a failed command throws, but a command can
+  also be accepted and not do what was asked, and this is the one place where
+  being wrong means never reaching the device again. It reads back, and says
+  `URGENT` with console instructions if the clear did not land.
+- **A session we cannot parse now blocks the restriction.** The code claimed
+  "not being able to tell counts as not covered" and then silently skipped
+  unparseable sessions, so a readable session elsewhere let the guard pass. An
+  IPv6 peer or an address-less record now stops the whole thing.
+- **A LAN that contains a live uplink address binds nothing.** It used to bind
+  anyway and report it. That installs an allow-list which *admits the WAN* while
+  reporting that management was locked to the LAN - claiming a protection that
+  is not being provided, which is worse than not providing it.
+- **An allow entry is dropped when any uplink has no address yet.** A private
+  range proves nothing: this hardware's own WAN is `192.168.4.0/22`. The only
+  real check is against the address actually on the uplink, and a DHCP or LTE
+  uplink can acquire one inside an allowed range moments after the apply
+  finishes.
+- **Interface classification requires an interface-name shape.** Any non-empty
+  answer used to mean "virtual AP". Getting that wrong means bouncing a *master*
+  radio and cutting every client, possibly including the operator's own link.
+
+One finding was accepted rather than fixed: a polling round that has already
+started runs to completion even past its deadline, so a round over many
+unresponsive radios can overrun by up to 30s each. Cutting the round short
+would judge the remaining radios on a stale result and report healthy DFS
+radios as dead. A slow answer is a better failure than a wrong one, and it only
+occurs when the device has already stopped responding.
+
 ## [6.2.4] - 2026-08-28 - Failed Commands Now Actually Fail
 
 `MikroTikSSH.exec()` resolved whenever stderr was empty. RouterOS prints its
