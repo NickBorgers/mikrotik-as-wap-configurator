@@ -19,6 +19,7 @@ const {
 } = require('../lib/router');
 const { parseCountry } = require('../lib/backup');
 const { MikroTikSSH, redactSecrets } = require('../lib/ssh-client');
+const { ALREADY_DONE, execIdempotent } = require('../lib/infrastructure');
 const { EventEmitter } = require('events');
 const {
   ensureWifiInterfaceUp, recheckPendingMasters, runningQuery, pollUntilRunning
@@ -2122,6 +2123,45 @@ test('omitting mssClamp is valid and leaves it on', () => {
       + '18:26:10 script,warning wan-notify: send failed, will retry\n';
     const out = await fakeSsh({ stdout: logLines, code: 0 }).exec('/log print');
     assert.strictEqual(out, logLines, 'exit 0 means success no matter what the text says');
+  });
+
+  console.log('\n=== Idempotent adds survive "already exists" ===');
+
+  // Captured from a live Chateau LTE6 by re-adding objects already present.
+  // These are the real wordings, not invented ones.
+  const DUP_ADD_ERRORS = [
+    ['bridge port', 'failure: device already added as bridge port (/interface/bridge/port/add; line 1)'],
+    ['list member', 'failure: already have such entry (/interface/list/member/add; line 1)'],
+    ['ip address', 'failure: already have such address (/ip/address/add; line 1)'],
+    ['dhcp server', 'failure: server with such name already exists (/ip/dhcp-server/add; line 1)'],
+    ['pool', 'failure: pool with such name exists (/ip/pool/add; line 1)'],
+    ['script', 'failure: item with such name already exists (/system/script/add; line 1)'],
+    ['scheduler', 'failure: item with this name already exists (/system/scheduler/add; line 1)'],
+    ['interface list', 'failure: already have interface list with such name (/interface/list/add; line 1)']
+  ];
+
+  for (const [what, message] of DUP_ADD_ERRORS) {
+    test(`a duplicate ${what} add is treated as already done`, async () => {
+      const mt = { exec: async () => { throw new Error(message); } };
+      const ok = await execIdempotent(mt, '/whatever add', `${what} present`);
+      assert.strictEqual(ok, true, `this wording must not abort an apply: ${message}`);
+    });
+  }
+
+  test('a GENUINE failure still propagates', async () => {
+    // The point of 6.2.4 was that real failures stop being invisible. This
+    // must not become a blanket "ignore everything an add says".
+    const mt = { exec: async () => { throw new Error('failure: not allowed by device-mode (/ip/service/set; line 1)'); } };
+    let threw = false;
+    try { await execIdempotent(mt, '/x add', 'x'); } catch (e) { threw = true; }
+    assert.ok(threw, 'device-mode refusal is not "already done"');
+  });
+
+  test('the bridge-port wording specifically is covered', () => {
+    // This is the one the shipped 6.2.5 missed, and it aborted the apply at
+    // the LAN bridge stage on real hardware.
+    assert.ok(ALREADY_DONE.some(p => 'failure: device already added as bridge port'.includes(p)),
+      'the regression that broke 6.2.5 applies must stay fixed');
   });
 
   console.log('\n=== Host resolution (lockout guard) ===');

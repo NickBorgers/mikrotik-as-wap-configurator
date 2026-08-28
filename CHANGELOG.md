@@ -1,5 +1,60 @@
 # Changelog
 
+## [6.2.6] - 2026-08-28 - Fix: 6.2.4 Broke Every Apply At The Bridge
+
+**6.2.5 and 6.2.4 cannot complete an apply.** Upgrade straight to 6.2.6.
+
+6.2.4 made `exec()` reject when RouterOS rejects a command, which was correct
+and necessary. What it exposed is that adding an object that already exists is
+a *rejection*:
+
+```
+/interface bridge port add bridge=bridge interface=ether2
+  exit 1  "failure: device already added as bridge port"
+```
+
+Re-adding is how this tool stays idempotent, so that happens on every re-apply.
+Before 6.2.4 the rejection resolved silently and the run continued. After it,
+the run aborted at the LAN bridge stage — on the router role and, via
+`lib/infrastructure.js`, on the WAP and CAPsMAN roles too.
+
+### Why the existing guard did not catch it
+
+`execIdempotent()` exists for exactly this, with
+`alreadyDonePatterns = ['already have', 'exists']`. But the bridge-port call
+sites passed their own narrower list, `['already have interface']`, which
+matches neither the bridge-port wording nor anything else. Those overrides had
+been dead code since they were written: the catch block was unreachable while
+`exec()` resolved on failure.
+
+### What changed
+
+The four narrower overrides are removed, so every idempotent add uses one
+evidence-based default. These are the real wordings, captured by re-adding
+objects already present on a live Chateau LTE6:
+
+```
+bridge port    "failure: device already added as bridge port"
+list member    "failure: already have such entry"
+ip address     "failure: already have such address"
+dhcp server    "failure: server with such name already exists"
+pool           "failure: pool with such name exists"
+script         "failure: item with such name already exists"
+scheduler      "failure: item with this name already exists"
+iface list     "failure: already have interface list with such name"
+```
+
+`['already', 'exists']` covers all eight. A genuine failure — a device-mode
+refusal, say — still propagates, which was the entire point of 6.2.4.
+
+### How this got shipped
+
+The 6.2.4 blast-radius check measured `remove`, `set`, `disable`, `print` and
+`find` against empty matches and found them all exit 0. It never tested an
+idempotent **add** of something already present, which is just as load-bearing.
+Verified this time by running the fixed code against real hardware end to end
+before release, not only against the test suite.
+
 ## [6.2.5] - 2026-08-28 - Management Cannot Reach the WAN, and a Realistic VAP Settle Budget
 
 Two fixes. The first closes a real exposure in the `role: router` path; the

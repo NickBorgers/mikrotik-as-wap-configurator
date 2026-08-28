@@ -363,6 +363,18 @@ const BAND_TO_INTERFACE = {
   permanently inert, but it CAN carry one (DHCP to reach the modem) and that address is on
   the WAN side. Conflating the two sets broke it in both directions during review.
 
+**Adding An Object That Already Exists Is A REJECTION (exit 1)**
+- Re-adding is how this tool stays idempotent, so this happens on EVERY re-apply. Since
+  6.2.4 made exec() reject, an unguarded add aborts the whole run - that is what broke
+  6.2.4/6.2.5 at the LAN bridge stage, on every role.
+- Always route idempotent adds through `execIdempotent()`, and do NOT pass a narrower
+  `alreadyDonePatterns` - the default `ALREADY_DONE` is derived from the eight real
+  wordings captured off hardware and listed in lib/infrastructure.js. The old per-call
+  overrides were dead code (unreachable while exec resolved on failure) and every one of
+  them was too narrow.
+- When changing exec()'s failure behaviour, test an idempotent ADD of an existing object,
+  not just remove/set/print against empty matches. That omission is how this shipped.
+
 **RouterOS Reports Errors On STDOUT With A NON-ZERO EXIT (fixed in 6.2.4)**
 - A rejected command writes its error to **stdout**, leaves **stderr empty**, and exits
   **non-zero**. Before 6.2.4 `exec()` only rejected on stderr, so it resolved and returned
