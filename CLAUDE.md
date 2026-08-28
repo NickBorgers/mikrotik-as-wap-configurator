@@ -349,6 +349,20 @@ const BAND_TO_INTERFACE = {
 - A comma in `notify.title` would split the RouterOS `http-header-field` into a second header. Validation rejects it.
 - A POST to an unreachable endpoint took ~10s to give up and blocks the tick, so an interval under 10s warns.
 
+**Management Binding Requires Every Uplink To Have An Address**
+- `configureManagementServices()` binds NOTHING - not even the LAN range - unless every
+  uplink that must resolve holds an address. An unresolved DHCP/LTE/PPPoE uplink can take
+  one inside `lanNetwork` or an allow entry moments later, which would make the binding
+  admit the WAN.
+- Consequence: a standby uplink that is unplugged, or an LTE backup with no signal, defers
+  hardening indefinitely. That is intended. Do NOT add an override that skips unresolved
+  uplinks - it re-opens exactly the hole this exists to close.
+- TWO sets, deliberately: `mustResolve` (must have an address before any range is trusted)
+  and `checkAddresses` (any address present must be checked for overlap). A PPPoE PARENT is
+  in the second only: it normally has no address, so requiring one makes the feature
+  permanently inert, but it CAN carry one (DHCP to reach the modem) and that address is on
+  the WAN side. Conflating the two sets broke it in both directions during review.
+
 **RouterOS Reports Errors On STDOUT With A NON-ZERO EXIT (fixed in 6.2.4)**
 - A rejected command writes its error to **stdout**, leaves **stderr empty**, and exits
   **non-zero**. Before 6.2.4 `exec()` only rejected on stderr, so it resolved and returned
@@ -537,6 +551,140 @@ const BAND_TO_INTERFACE = {
 - Firewall order is deliberate: accept established, drop invalid, accept ICMP, accept `in-interface-list=LAN`, and only THEN drop `in-interface-list=!LAN`. The drop rule is skipped entirely if the LAN list cannot be verified to contain `bridge`.
 - Fasttrack is OFF by default (`lan.fasttrack: true` to enable). Fasttracked flows skip connection tracking, which slows how fast stale sessions clear after a failover.
 
+**Router Role: The Management Plane Cannot Reach The WAN (v6.2.4)**
+- Before this, every `/ip service` entry listened on `address=""` (any source). The ONLY
+  thing keeping admin off the uplinks was one firewall rule, `router:input-drop-wan`.
+  It worked - 34,937 packets dropped on the live device, zero WAN-side logins - but it
+  is a single object. Delete it, reorder it, or add a permissive input rule above it and
+  the whole management surface is exposed behind whatever password the device has.
+- `configureManagementServices()` in `lib/router.js` binds EVERY `/ip service` entry to
+  `networkOf(lan.address)`, so RouterOS's own accept path refuses an off-LAN connection.
+  The firewall rule STAYS. Two layers, independent failure modes; do not remove either.
+- Disabled services are bound too (`www-ssl` ships disabled). Binding only the enabled
+  ones would leave a one-command path back to an exposed management plane.
+- `telnet` and `ftp` are disabled: cleartext, and this tool drives devices over SSH.
+  `lan.management.cleartext: true` keeps them, still LAN-bound.
+- LAYER 2 BYPASSES ALL OF THAT. MAC-telnet and MAC-winbox run over ethernet frames -
+  no IP, so neither `/ip service address=` nor the firewall input chain applies. An
+  attacker on the WAN broadcast domain reaches them without an address. `/tool mac-server`,
+  `/tool mac-server mac-winbox` and `/ip neighbor discovery-settings` are set to the `LAN`
+  interface list and VERIFIED. RouterOS defconf already sets them; nothing enforced it.
+  Gated on `lanListVerified` for the same reason the drop rule is: pointing MAC-winbox at
+  a list without the bridge removes the recovery path that exists for this kind of mistake.
+- RoMON is layer 2 too. It is REPORTED when enabled, not switched off: this tool does not
+  own it and it is off from the factory. `/tool romon port add interface=<wan> forbid=yes`
+  is the fix. Not implemented because device-mode blocked live verification on the test
+  device, and an unverified device command is how v6.2.2 shipped broken.
+
+**The Escape Hatch Cannot Express A WAN Address (the design tension, resolved)**
+- Requirement was "no WAN admin access under ANY config a user writes", but a router
+  managed across a VPN needs SOME way to widen access. Both hold only if the hatch's
+  GRAMMAR cannot name a WAN source.
+- `lan.management.allow` entries must be non-globally-routable: RFC1918, CGNAT
+  (100.64.0.0/10, where Tailscale lives), link-local, loopback. See `PRIVATE_SCOPES`.
+- Checked on the entry's NETWORK, not its address. `10.0.0.1/1` looks private and masks
+  to `0.0.0.0/1` - half the internet. Testing the address would have waved it through.
+- PRIVATE IS NOT SUFFICIENT ON ITS OWN. The test device's own `ether1` sits on
+  192.168.4.0/22 behind another router, and CGNAT is a real WAN range on some ISPs. So
+  every entry is ALSO compared at apply time against the addresses actually on the
+  uplinks (`readWanAddresses()`), and one covering a live uplink address is dropped and
+  reported. A DHCP/LTE address is not in the config; only a runtime check can see it.
+- If `lan.address` ITSELF covers an uplink address (LAN 192.168.0.0/16, WAN 192.168.4.24),
+  the entry is KEPT and reported. Dropping it would leave an empty list, which means no
+  restriction at all - strictly worse. The firewall covers the overlap.
+
+**Router Role: The Lockout Guard On /ip service (outranks the exposure it fixes)**
+- This tool connects over SSH. Restricting `/ip service` while the operator is reaching
+  the device from somewhere the restriction excludes locks them out of a REMOTE gateway
+  permanently. That is far worse than the exposure being closed.
+- Ask the DEVICE who is connected: `/user active print terse` ->
+  `0 when=... name=admin address=192.168.80.199 via=ssh group=full`. Unless EVERY active
+  session is covered by the allow list, restrict nothing.
+- Use the device's view, never this process's idea of its own source address. A jump
+  host, a NAT gateway or a VPN concentrator all rewrite it on the way; only the router
+  knows what it will compare `address=` against. (`conn.sock.localAddress` was considered
+  and rejected for exactly that reason.)
+- "Cannot tell" == "not covered". An unreadable session list, or an EMPTY one, both mean
+  restrict nothing. This session must appear in that list, so empty means the command or
+  the parse is broken, not that nobody is connected.
+- Any uncovered session blocks it, not just ours. There is no reliable way to tell which
+  active session belongs to this process.
+- Skipping is a WARNING, not an unmet requirement. `configureRouterFirewall()` already
+  skips its drop rule the same way when it cannot verify the LAN list. Failing an
+  otherwise-good apply because a SAFETY guard fired is its own kind of breakage, and the
+  firewall rule still stands.
+- Changing `lan.address` therefore skips the restriction on run 1 (operator is on the old
+  subnet) and lands it on run 2. Same two-run shape as the LAN address migration.
+- SSH is bound LAST, after every other service proved the command shape. If it reads back
+  EXCLUDING the current session, it is cleared again automatically - RouterOS applies
+  `address=` to new connections only, so a wrong value does not drop the live session and
+  the lockout would not surface until the next connect. The apply still FAILS. If the
+  clear also fails, the problem is prefixed `URGENT:`.
+- A wrong ssh value that still COVERS the session is reported but NOT cleared. Reopening
+  the management plane to answer a mismatch that is not a lockout is the wrong trade.
+
+**RouterOS Reports Invalid Arguments On STDOUT, So mt.exec Resolves (v6.2.4)**
+- Verified live: `/ip service set [find name="ftp"] address="192.168.80.1/24"` returns
+  `invalid value for argument address: ...` as normal output. `lib/ssh-client.js` rejects
+  only when STDERR has data, so the promise RESOLVES and the try/catch never fires.
+- Consequence: "the command did not throw" is NOT evidence it did anything. Every write in
+  `configureManagementServices()` is verified by reading it back. Assume this for any new
+  device write.
+- `address=` also rejects any value with a host bit set ("value of address must have all
+  host bits zero"), which is why the LAN network is masked with `networkOf()` before it is
+  sent, and why user-supplied `allow` entries are masked rather than passed through.
+
+**RouterOS Renders One Address List Two Different Ways**
+- `print terse` -> `address=192.168.80.0/24,100.64.0.0/10` (COMMA, unquoted when set,
+  but `address=""` when empty in `print detail`).
+- `:put [/ip service get [find name="ssh"] address]` -> `192.168.80.0/24;100.64.0.0/10`
+  (SEMICOLON - `:put` renders an array). Both reach `parseAddressList()`. Handling only
+  one reads a two-entry list as one malformed entry, so verification passes or fails at
+  random.
+- `/tool mac-server print terse` is a SYNTAX ERROR. Those settings must be read with
+  `:put [/tool mac-server get allowed-interface-list]`.
+
+**Backup Records The Restriction Only When It Is Demonstrably In Place**
+- `backupRouterConfig()` reads `lan.management` only when the `ssh` service actually has
+  an address list. A device whose ssh still listens on any address has simply never been
+  hardened.
+- Recording `cleartext: true` off the back of an unhardened device would let a
+  backup/restore cycle silently carry "leave telnet on" forward for ever. Same shape as
+  the `mssClamp: false` rule: never record a default that would UNDO hardening.
+- The LAN network is filtered out of `allow` - `lan.address` already implies it.
+
+**VAP Settle Budget Is A Poll, Not A Fixed Wait (v6.2.4, fixing 6.2.3)**
+- 6.2.3 waited a flat `delayMs=3000` after toggling a virtual AP, `attempts=3`, so about
+  6s of settle. TOO SHORT, and it fails in the wrong direction.
+- Production evidence, same live Chateau, two real applies:
+  - Apply A: retried twice, exhausted the budget, reported `wifi2-ssid2 is configured but
+    not running`, apply exited INCOMPLETE - and the interface came up moments later. A
+    FALSE NEGATIVE breaks any automation gating on the exit code.
+  - Apply B: `retrying (1/2)` then recovered inside the budget and passed. So: marginal.
+  - Separately measured: a VAP toggled from a DISABLED state recovers in 3.9s. Recovery
+    after a FRESH create is evidently slower than that.
+- Now: toggle once, then POLL `running` until it comes up or a 60s budget expires.
+- Why 60s. Polling costs NOTHING on a healthy interface - it returns on the first read -
+  so the budget is only spent on a genuine failure. That makes a generous budget nearly
+  free, which is why it is not tuned tightly to the observed ~6s. It stays under the 90s
+  the master re-check allows for a DFS availability check.
+- The budget is SHARED across retries (`timeoutMs / (attempts - 1)` each), not granted
+  per retry. Raising `attempts` divides it instead of multiplying the wait.
+- Attempt 1 is a plain read, never a poll: the common case is already-up and must not pay
+  a poll cycle. Verified by asserting the fake clock never advances for a healthy VAP.
+- The honest failure is KEPT. An expired budget still reports the problem, still with the
+  device's own `;;; failed to create interface` explanation. Do not "fix" this into
+  waiting longer and then claiming success - that was the bug 6.2.2 existed to fix.
+- The master-radio property is UNCHANGED: a master is never toggled and never enters the
+  settle poll. It carries every associated client, very possibly including the operator.
+- `pollUntilRunning()` in `lib/wifi-config.js` is now shared by `ensureWifiInterfaceUp()`
+  and `recheckPendingMasters()`. Do not write a third copy. Its awkward properties are
+  all load-bearing: ONE shared deadline for all names (a controller with 20 dead radios
+  would otherwise stall for timeout x 20); time measured against the WALL CLOCK, not
+  accumulated sleep (a slow SSH read burns real time, and counting only sleeps ran past
+  the budget exactly when reads were slowest); ATOMIC rounds (breaking out mid-round
+  judges later names on a stale previous-round result); and a read failure is NOT fatal.
+
 **LTE Notes (Chateau LTE6 / EG06-A)**
 - `/interface lte monitor lte1 once` showing `status: connected` only means the modem attached to the tower. It does NOT mean the data session has an IP.
 - If there is no address on lte1 and no default route, the APN is wrong. Check `/ip address print where interface=lte1`.
@@ -705,6 +853,12 @@ run().catch(e => console.error(e.message));
 - `/system/resource print` - System info
 
 ## Testing
+
+**`test()` in test/router.test.js DOES NOT AWAIT its callback.** An `async` test body is
+counted as a pass whatever it asserts, and a failed assertion surfaces only as an
+unhandled rejection. Do the `await` OUTSIDE the `test()` call and assert on the result
+synchronously, which is what most of the file already does.
+
 
 Backup existing configuration:
 ```bash

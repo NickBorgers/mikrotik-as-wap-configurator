@@ -58,6 +58,48 @@ lan:
   # failover cleanliness.
   # fasttrack: true
 
+  # -------------------------------------------------------------------------
+  # Management plane (optional, and hardened whether or not you write it)
+  # -------------------------------------------------------------------------
+  # Applying ALWAYS binds every /ip service entry - ssh, www, winbox, api, and
+  # the disabled ones too - to the network derived from lan.address above, so
+  # RouterOS itself refuses a connection from off-LAN. telnet and ftp are
+  # disabled, and MAC-telnet, MAC-winbox and neighbor discovery are scoped to
+  # the LAN interface list, because those run over layer 2 and ignore both the
+  # service binding and the firewall.
+  #
+  # You do not need this block. It only exists to widen or soften the defaults,
+  # and NOTHING you can write in it opens management to the WAN.
+  #
+  # management:
+  #   allow:
+  #     - 100.64.0.0/10     # a Tailscale/WireGuard overlay
+  #     - 10.9.0.0/24       # a management VLAN reached over a VPN
+  #
+  #     Extra SOURCE ranges that may reach the management services, on top of
+  #     the LAN. Every entry must be non-globally-routable - RFC1918, CGNAT,
+  #     link-local or loopback - so no entry can ever name an internet source.
+  #     Entries are also checked against the addresses actually on your uplinks
+  #     when applying: a private range that happens to BE your WAN (a double-NAT
+  #     uplink on 192.168.4.0/22, say) is dropped and reported.
+  #
+  #   cleartext: true
+  #     Keep telnet and ftp enabled. They stay bound to the LAN like everything
+  #     else, so this is a LAN-sniffing decision, not a WAN one. Default is to
+  #     disable them: both send the password in clear, and this tool drives
+  #     devices over SSH.
+  #
+  # LOCKOUT SAFETY. Before restricting anything, the tool asks the DEVICE which
+  # sessions are connected to it (`/user active print terse`) and skips the
+  # whole restriction unless every one of them is covered. Being unable to tell
+  # counts as not covered. So applying from a jump host, a VPN, or over the WAN
+  # address leaves the services open and says so loudly - the firewall rule
+  # still keeps the uplinks closed - rather than locking you out of a remote
+  # gateway. Re-apply from the LAN, or add your range to `allow`, and it lands.
+  #
+  # Note that changing lan.address means run one is made from the OLD subnet,
+  # so the restriction is skipped; run two, from the new address, applies it.
+
   # TCP MSS clamping, on by default. An uplink narrower than 1500 bytes - PPPoE
   # at 1492, most LTE bearers - needs each end told how much it may send. The
   # normal way to learn that is path MTU discovery, which relies on an ICMP

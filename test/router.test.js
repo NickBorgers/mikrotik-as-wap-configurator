@@ -14,13 +14,14 @@ const {
   parseCidr, cidrContains, networkOf, defaultPoolFor,
   normalizeWans, wanMemberComment, parseWanMemberComment,
   resolveHostAddress, configureMssClamp, mssClampRuleIsCurrent, terseRecords,
-  parseTerseRecord
+  parseTerseRecord, configureManagementServices, managementAllowList,
+  activeSessionAddresses, parseAddressList, backupRouterConfig, readWanAddresses
 } = require('../lib/router');
 const { parseCountry } = require('../lib/backup');
 const { MikroTikSSH, redactSecrets } = require('../lib/ssh-client');
 const { EventEmitter } = require('events');
 const {
-  ensureWifiInterfaceUp, recheckPendingMasters, runningQuery
+  ensureWifiInterfaceUp, recheckPendingMasters, runningQuery, pollUntilRunning
 } = require('../lib/wifi-config');
 const { validateRouterConfig } = require('../lib/validate-router');
 
@@ -1007,6 +1008,7 @@ test('omitting mssClamp is valid and leaves it on', () => {
         sent.push(cmd);
         if (cmd.includes('master-interface')) {
           if (opts.masterLookupThrows) throw new Error('no such item');
+          if (opts.masterValue !== undefined) return opts.masterValue;
           return opts.isMaster ? '' : 'wifi2';
         }
         if (cmd.includes('running')) {
@@ -1020,18 +1022,38 @@ test('omitting mssClamp is valid and leaves it on', () => {
       }
     };
   };
-  const noSleep = { sleep: async () => {}, delayMs: 0 };
+  // A fake clock. Nothing waits in real time, but the settle budget still
+  // expires, so a test that exhausts it does so deterministically instead of
+  // relying on the round cap to bail it out.
+  const fakeClock = () => {
+    let t = 0;
+    return { now: () => t, sleep: async ms => { t += ms; }, elapsed: () => t };
+  };
+  const noSleep = () => {
+    const clock = fakeClock();
+    return { sleep: clock.sleep, now: clock.now, clock };
+  };
   const toggles = d => d.sent.filter(c => c.includes('disabled='));
 
   const upFirstTry = wifiDevice(1);
-  const upFirstProblem = await ensureWifiInterfaceUp(upFirstTry, '/interface/wifi', 'wifi2-ssid2', noSleep);
+  const upFirstProblem = await ensureWifiInterfaceUp(upFirstTry, '/interface/wifi', 'wifi2-ssid2', noSleep());
   test('an interface that is already running is left alone', () => {
     assert.strictEqual(upFirstProblem, null);
     assert.strictEqual(toggles(upFirstTry).length, 0, 'must not bounce a working interface');
   });
 
+  const garbled = wifiDevice(99, { masterValue: 'invalid value for argument something' });
+  const garbledProblem = await ensureWifiInterfaceUp(garbled, '/interface/wifi', 'wifi2-ssid2', noSleep);
+  test('a garbled classification answer is NOT read as "virtual"', () => {
+    // Believing junk here means bouncing a MASTER radio and cutting every
+    // client, possibly including the operator's own link. Require an
+    // interface-name shape, not merely non-empty text.
+    assert.strictEqual(toggles(garbled).length, 0, 'must not toggle on an unrecognised answer');
+    assert.ok(garbledProblem, 'and must not call it healthy either');
+  });
+
   const upAfterRetry = wifiDevice(2);
-  const retryProblem = await ensureWifiInterfaceUp(upAfterRetry, '/interface/wifi', 'wifi2-ssid2', noSleep);
+  const retryProblem = await ensureWifiInterfaceUp(upAfterRetry, '/interface/wifi', 'wifi2-ssid2', noSleep());
   test('a virtual AP that failed to create is retried and comes up', () => {
     assert.strictEqual(retryProblem, null, `expected recovery, got: ${retryProblem}`);
     assert.deepStrictEqual(
@@ -1047,7 +1069,7 @@ test('omitting mssClamp is valid and leaves it on', () => {
   // A master also has benign reasons to read not-running: DFS channel
   // availability check, a CAP still provisioning, CAPsMAN not done activating.
   const masterDown = wifiDevice(99, { isMaster: true });
-  const masterProblem = await ensureWifiInterfaceUp(masterDown, '/interface/wifi', 'wifi2', noSleep);
+  const masterProblem = await ensureWifiInterfaceUp(masterDown, '/interface/wifi', 'wifi2', noSleep());
   test('a MASTER radio that is not running is NEVER bounced', () => {
     assert.strictEqual(toggles(masterDown).length, 0,
       `must not touch a master radio, sent: ${JSON.stringify(toggles(masterDown))}`);
@@ -1059,7 +1081,7 @@ test('omitting mssClamp is valid and leaves it on', () => {
     const pendingMasters = [];
     const deferred = wifiDevice(99, { isMaster: true });
     const problem = await ensureWifiInterfaceUp(deferred, '/interface/wifi', 'wifi2',
-      { ...noSleep, pendingMasters });
+      { ...noSleep(), pendingMasters });
     assert.strictEqual(problem, null, 'deferred, so not an immediate failure');
     assert.deepStrictEqual(pendingMasters, ['wifi2'], 'must be queued for re-check');
     assert.strictEqual(toggles(deferred).length, 0, 'still must not bounce it');
@@ -1067,7 +1089,7 @@ test('omitting mssClamp is valid and leaves it on', () => {
 
   test('a not-running master with nowhere to defer is reported, not passed', async () => {
     const orphan = wifiDevice(99, { isMaster: true });
-    const problem = await ensureWifiInterfaceUp(orphan, '/interface/wifi', 'wifi2', noSleep);
+    const problem = await ensureWifiInterfaceUp(orphan, '/interface/wifi', 'wifi2', noSleep());
     assert.ok(problem, 'must not report a dead master as healthy');
     assert.ok(/not running/i.test(problem), problem);
     assert.strictEqual(toggles(orphan).length, 0, 'still must not bounce it');
@@ -1075,7 +1097,7 @@ test('omitting mssClamp is valid and leaves it on', () => {
 
   const neverUp = wifiDevice(99);
   const neverProblem = await ensureWifiInterfaceUp(neverUp, '/interface/wifi', 'wifi2-ssid2',
-    { ...noSleep, attempts: 3 });
+    { ...noSleep(), attempts: 3 });
   test('a virtual AP that never comes up is reported, not passed', () => {
     assert.ok(neverProblem, 'a dead SSID must produce a problem');
     assert.ok(/not running/i.test(neverProblem), neverProblem);
@@ -1089,7 +1111,7 @@ test('omitting mssClamp is valid and leaves it on', () => {
   });
 
   const unreadable = wifiDevice(1, { readThrows: true });
-  const unreadableProblem = await ensureWifiInterfaceUp(unreadable, '/interface/wifi', 'wifi2-ssid2', noSleep);
+  const unreadableProblem = await ensureWifiInterfaceUp(unreadable, '/interface/wifi', 'wifi2-ssid2', noSleep());
   test('an unreadable interface is reported without blind retries', () => {
     assert.ok(unreadableProblem, 'must report');
     assert.ok(/could not be read back/i.test(unreadableProblem), unreadableProblem);
@@ -1098,9 +1120,113 @@ test('omitting mssClamp is valid and leaves it on', () => {
   });
 
   const stuck = wifiDevice(99, { toggleThrows: true });
-  const stuckProblem = await ensureWifiInterfaceUp(stuck, '/interface/wifi', 'wifi2-ssid2', noSleep);
+  const stuckProblem = await ensureWifiInterfaceUp(stuck, '/interface/wifi', 'wifi2-ssid2', noSleep());
   test('a failed restart is reported rather than swallowed', () => {
     assert.ok(/could not be restarted/i.test(stuckProblem), stuckProblem);
+  });
+
+
+  console.log('\n=== VAP settle budget (the 6.2.3 false negative) ===');
+
+  // THE REGRESSION. 6.2.3 waited a flat 3s after each toggle and gave up after
+  // two of them. On the live Chateau the apply exhausted that, reported the
+  // SSID dead and exited INCOMPLETE - and the interface came up moments later.
+  // A false negative on a healthy device breaks any automation gating on the
+  // exit code, so it fails in the worse direction.
+  const lateRecovery = wifiDevice(5);
+  const lateOpts = noSleep();
+  const lateProblem = await ensureWifiInterfaceUp(
+    lateRecovery, '/interface/wifi', 'wifi2-ssid2', lateOpts);
+  test('a VAP that comes up well after the toggle is NOT reported dead', () => {
+    assert.strictEqual(lateProblem, null,
+      `a late but real recovery must pass, got: ${lateProblem}`);
+  });
+  test('waiting longer does not mean toggling more - one toggle, then patience', () => {
+    // Re-toggling mid-recovery would restart the very thing being waited for.
+    assert.deepStrictEqual(
+      toggles(lateRecovery).map(c => /disabled=(\w+)/.exec(c)[1]), ['yes', 'no'],
+      'exactly one disable/enable, then poll');
+  });
+  test('the settle wait is a POLL, not one long sleep', () => {
+    // Several reads after the single toggle is what makes an early recovery
+    // return early instead of always paying the whole budget.
+    const reads = lateRecovery.sent.filter(c => c.includes('running')).length;
+    assert.ok(reads >= 3, `expected repeated reads while settling, got ${reads}`);
+  });
+
+  const healthy = wifiDevice(1);
+  const healthyOpts = noSleep();
+  await ensureWifiInterfaceUp(healthy, '/interface/wifi', 'wifi2-ssid2', healthyOpts);
+  test('a healthy interface pays none of the budget', () => {
+    // Polling is only free if the common case never enters the poll.
+    assert.strictEqual(healthyOpts.clock.elapsed(), 0, 'no time may pass for an up interface');
+    assert.strictEqual(healthy.sent.filter(c => c.includes('running')).length, 1,
+      'one read, not a poll cycle');
+  });
+
+  const exhausted = wifiDevice(999);
+  const exhaustedOpts = noSleep();
+  const exhaustedProblem = await ensureWifiInterfaceUp(
+    exhausted, '/interface/wifi', 'wifi2-ssid2', exhaustedOpts);
+  test('a budget that genuinely expires STILL reports the problem', () => {
+    // The honest failure is the good part of 6.2.3 and must not regress into
+    // "wait longer and then claim success".
+    assert.ok(exhaustedProblem, 'a dead SSID must still produce a problem');
+    assert.ok(/not running/i.test(exhaustedProblem), exhaustedProblem);
+    assert.ok(/failed to create interface/.test(exhaustedProblem),
+      `the device's own reason must survive: ${exhaustedProblem}`);
+  });
+  test('the budget is bounded, and is 60s by default', () => {
+    const spent = exhaustedOpts.clock.elapsed();
+    assert.ok(spent > 6000, `6.2.3 spent about 6s; this must be far more, got ${spent}ms`);
+    // Two toggles at 500ms each on top of the 60s of settling.
+    assert.ok(spent <= 62000, `must stay bounded, got ${spent}ms`);
+  });
+
+  const manyAttempts = wifiDevice(999);
+  const manyOpts = { ...noSleep(), attempts: 6 };
+  await ensureWifiInterfaceUp(manyAttempts, '/interface/wifi', 'wifi2-ssid2', manyOpts);
+  test('the budget is SHARED across retries, so more attempts cost no more time', () => {
+    // A per-retry budget would make attempts=6 wait five minutes. The retries
+    // divide the budget instead of multiplying it.
+    assert.strictEqual(toggles(manyAttempts).length, 10, 'five retries, disable+enable each');
+    assert.ok(manyOpts.clock.elapsed() <= 63000,
+      `raising attempts must not multiply the wait, got ${manyOpts.clock.elapsed()}ms`);
+  });
+
+  const masterPatience = wifiDevice(999, { isMaster: true });
+  const masterOpts = noSleep();
+  await ensureWifiInterfaceUp(masterPatience, '/interface/wifi', 'wifi2', masterOpts);
+  test('the longer budget did NOT loosen the master-radio safety property', () => {
+    // The master carries every associated client, very possibly including the
+    // operator running this tool over that radio.
+    assert.strictEqual(toggles(masterPatience).length, 0,
+      `a master must never be toggled, sent: ${JSON.stringify(toggles(masterPatience))}`);
+    assert.strictEqual(masterOpts.clock.elapsed(), 0, 'and it must not sit in the poll either');
+  });
+
+  test('the settle poll reads through the same :put-wrapped query', () => {
+    // pollUntilRunning is now shared with recheckPendingMasters, so a bare get
+    // here would break both. A bare get prints nothing over an SSH exec.
+    for (const cmd of lateRecovery.sent.filter(c => c.includes('running'))) {
+      assert.ok(cmd.startsWith(':put ['), `a bare get reads back empty: ${cmd}`);
+    }
+  });
+
+  // The shared primitive, exercised directly. Awaited OUT HERE: test() does not
+  // await its callback, so an async body would be counted as a pass whatever
+  // it asserted.
+  let pollT = 0;
+  const pollDevice = {
+    sent: [],
+    exec: async c => { pollDevice.sent.push(c); pollT += 1000; return 'false'; }
+  };
+  const pollResult = await pollUntilRunning(pollDevice, ['wifi1', 'wifi1', 'wifi2'], {
+    timeoutMs: 10000, pollMs: 2000, now: () => pollT, sleep: async ms => { pollT += ms; }
+  });
+  test('pollUntilRunning returns the names still down, and stops at the deadline', () => {
+    assert.deepStrictEqual([...pollResult.pending.keys()], ['wifi1', 'wifi2'], 'duplicates collapse');
+    assert.ok(pollResult.elapsedMs >= 10000, `must use the budget, got ${pollResult.elapsedMs}`);
   });
 
   console.log('\n=== Deferred master re-check ===');
@@ -1252,6 +1378,640 @@ test('omitting mssClamp is valid and leaves it on', () => {
     const d = recheckDevice([]);
     assert.deepStrictEqual(await recheckPendingMasters(d, [], fastPoll()), []);
     assert.strictEqual(d.sent.length, 0, 'must not talk to the device for an empty list');
+  });
+
+  console.log('\n=== Management plane: allow list ===');
+
+  test('the LAN network leads the allow list, masked to all-zero host bits', () => {
+    // RouterOS rejects address= outright when a host bit is set:
+    // "value of address must have all host bits zero, as in 192.168.80.0/24".
+    // Verified on RouterOS 7.18.2.
+    const { entries, problems } = managementAllowList({ address: '192.168.80.1/24' });
+    assert.deepStrictEqual(entries, ['192.168.80.0/24']);
+    assert.deepStrictEqual(problems, []);
+  });
+
+  test('an extra allow entry is masked too, so a host address still applies', () => {
+    const { entries } = managementAllowList({
+      address: '192.168.80.1/24',
+      management: { allow: ['10.9.0.5/24'] }
+    });
+    assert.deepStrictEqual(entries, ['192.168.80.0/24', '10.9.0.0/24']);
+  });
+
+  test('a publicly routable allow entry is REFUSED, not applied', () => {
+    // The whole point of the feature: no config a user writes may open the
+    // management plane to an internet source.
+    const { entries, problems } = managementAllowList({
+      address: '192.168.80.1/24',
+      management: { allow: ['8.8.8.0/24'] }
+    });
+    assert.deepStrictEqual(entries, ['192.168.80.0/24'], 'the entry must not survive');
+    assert.ok(problems.some(p => /publicly routable/.test(p)), problems.join('; '));
+  });
+
+  test('0.0.0.0/0 cannot be smuggled in as an allow entry', () => {
+    const { entries, problems } = managementAllowList({
+      address: '192.168.80.1/24',
+      management: { allow: ['0.0.0.0/0'] }
+    });
+    assert.deepStrictEqual(entries, ['192.168.80.0/24']);
+    assert.ok(problems.length === 1, problems.join('; '));
+  });
+
+  test('a private-looking host address with a huge range is judged on its NETWORK', () => {
+    // 10.0.0.1/1 masks to 0.0.0.0/1, which is half the internet. Testing the
+    // address rather than the network would have waved it through.
+    const { entries, problems } = managementAllowList({
+      address: '192.168.80.1/24',
+      management: { allow: ['10.0.0.1/1'] }
+    });
+    assert.deepStrictEqual(entries, ['192.168.80.0/24']);
+    assert.ok(problems.some(p => /publicly routable/.test(p)), problems.join('; '));
+  });
+
+  test('CGNAT is allowed, because that is where overlay networks live', () => {
+    // Tailscale and most WireGuard overlays sit in 100.64.0.0/10. Refusing it
+    // would leave no way to manage a router across a VPN.
+    const { entries, problems } = managementAllowList({
+      address: '192.168.80.1/24',
+      management: { allow: ['100.64.0.0/10'] }
+    });
+    assert.deepStrictEqual(entries, ['192.168.80.0/24', '100.64.0.0/10']);
+    assert.deepStrictEqual(problems, []);
+  });
+
+  test('a malformed allow entry is reported, not silently dropped', () => {
+    const { problems } = managementAllowList({
+      address: '192.168.80.1/24',
+      management: { allow: ['not-a-cidr'] }
+    });
+    assert.ok(problems.some(p => /not valid CIDR/.test(p)), problems.join('; '));
+  });
+
+  test('the LAN network is not duplicated when it is also listed explicitly', () => {
+    const { entries } = managementAllowList({
+      address: '192.168.80.1/24',
+      management: { allow: ['192.168.80.0/24'] }
+    });
+    assert.deepStrictEqual(entries, ['192.168.80.0/24']);
+  });
+
+  console.log('\n=== Management plane: RouterOS output shapes ===');
+
+  test('an address list is parsed in BOTH forms RouterOS prints', () => {
+    // Captured live: `print terse` renders the list comma-separated, while
+    // `:put [... get address]` renders the same list semicolon-separated
+    // because :put formats an array. Handling only one reads a two-entry list
+    // as one malformed entry.
+    assert.deepStrictEqual(parseAddressList('192.168.80.0/24;100.64.0.0/10'),
+      ['192.168.80.0/24', '100.64.0.0/10']);
+    assert.deepStrictEqual(parseAddressList('192.168.80.0/24,100.64.0.0/10'),
+      ['192.168.80.0/24', '100.64.0.0/10']);
+    assert.deepStrictEqual(parseAddressList(''), []);
+    assert.deepStrictEqual(parseAddressList('\r\n'), []);
+  });
+
+  test('active sessions are read from real terse output', () => {
+    // Captured from the live Chateau LTE6. Note `when=` carries a space, which
+    // a naive whitespace split would turn into a bogus field.
+    const real = '0 when=2026-08-27 19:44:13 name=admin address=192.168.80.199 via=ssh group=full';
+    const { sessions, unreadable } = activeSessionAddresses(real);
+    assert.deepStrictEqual(sessions, [{ address: '192.168.80.199', via: 'ssh' }]);
+    assert.deepStrictEqual(unreadable, []);
+  });
+
+  test('a console session is ignored - no IP restriction can affect it', () => {
+    const out = '0 when=2026-08-27 19:44:13 name=admin via=local group=full\n'
+      + '1 when=2026-08-27 19:45:00 name=admin address=192.168.80.5 via=winbox group=full';
+    const { sessions, unreadable } = activeSessionAddresses(out);
+    assert.deepStrictEqual(sessions, [{ address: '192.168.80.5', via: 'winbox' }]);
+    assert.deepStrictEqual(unreadable, [], 'a console session is safe to disregard, not unreadable');
+  });
+
+  test('a session we CANNOT parse is surfaced, never silently dropped', () => {
+    // The old code skipped these. A parseable session elsewhere then made the
+    // guard pass while an unreadable one - possibly this very connection - was
+    // never checked against the restriction.
+    const out = '0 when=2026-08-27 19:44:13 name=admin address=192.168.80.199 via=ssh group=full\n'
+      + '1 when=2026-08-27 19:45:00 name=admin address=fe80::1%ether1 via=winbox group=full\n'
+      + '2 when=2026-08-27 19:46:00 name=admin via=api group=full';
+    const { sessions, unreadable } = activeSessionAddresses(out);
+    assert.deepStrictEqual(sessions, [{ address: '192.168.80.199', via: 'ssh' }]);
+    assert.strictEqual(unreadable.length, 2,
+      'an IPv6 peer and an address-less session must both count as unreadable');
+    assert.ok(unreadable.every(u => u.raw), 'the raw record is kept so a human can see what it was');
+  });
+
+  console.log('\n=== Management plane: applying the restriction ===');
+
+  // Real /ip service output from the Chateau LTE6, before any change.
+  const SERVICE_TERSE = [
+    '0   name=telnet port=23 address= vrf=main max-sessions=20',
+    '1   name=ftp port=21 address= vrf=main max-sessions=20',
+    '2   name=www port=80 address= vrf=main max-sessions=20',
+    '3   name=ssh port=22 address= vrf=main max-sessions=20',
+    '4 X name=www-ssl port=443 address= certificate=none tls-version=any vrf=main max-sessions=20',
+    '5   name=api port=8728 address= vrf=main max-sessions=20',
+    '6   name=winbox port=8291 address= vrf=main max-sessions=20',
+    '7   name=api-ssl port=8729 address= certificate=none tls-version=any vrf=main max-sessions=20'
+  ].join('\n');
+  const SERVICE_NAMES = ['telnet', 'ftp', 'www', 'ssh', 'www-ssl', 'api', 'winbox', 'api-ssl'];
+
+  // Real /ip address output. ether1 is on 192.168.4.0/22 - a PRIVATE WAN behind
+  // someone else's router - and lte1 holds a public /32.
+  const ADDRESS_TERSE = [
+    '0   comment=router:lan address=192.168.80.1/24 network=192.168.80.0 interface=bridge actual-interface=bridge',
+    '1 D address=26.178.199.111/32 network=26.178.199.111 interface=lte1 actual-interface=lte1',
+    '2 D address=192.168.4.24/22 network=192.168.4.0 interface=ether1 actual-interface=ether1'
+  ].join('\n');
+
+  const MEMBER_TERSE = [
+    '6 comment=wan:primary type=dhcp distance=1 probe=8.8.8.8 list=WAN interface=ether1 dynamic=no',
+    '7 comment=wan:backup type=lte distance=2 probe=1.1.1.1 apn=fast.t-mobile.com list=WAN interface=lte1 dynamic=no'
+  ].join('\n');
+
+  const MGMT_WANS = [
+    { name: 'primary', interface: 'ether1' },
+    { name: 'backup', interface: 'lte1' }
+  ];
+
+  /**
+   * A device that actually holds state, so a `set` followed by the verifying
+   * read agrees with itself. A fake that answers whatever it is asked cannot
+   * catch a wrong command - that is exactly how v6.2.2 shipped broken.
+   */
+  const mgmtDevice = (opts = {}) => {
+    const address = new Map(SERVICE_NAMES.map(n => [n, '']));
+    const disabled = new Map(SERVICE_NAMES.map(n => [n, n === 'www-ssl']));
+    const l2 = { mac: 'all', winbox: 'all', neighbor: 'all' };
+    const sent = [];
+    const d = {
+      sent, address, disabled, l2,
+      exec: async cmd => {
+        sent.push(cmd);
+        if (opts.fail && opts.fail(cmd)) throw new Error('permission denied');
+        if (/^\/interface list member print/.test(cmd)) {
+          return opts.members !== undefined ? opts.members : MEMBER_TERSE;
+        }
+        if (/^\/ip address print terse/.test(cmd)) {
+          // '' models uplinks that are up but have no address yet - the case
+          // where an allow entry cannot be proven safe.
+          return opts.wanAddresses !== undefined ? opts.wanAddresses : ADDRESS_TERSE;
+        }
+        if (/^\/ip service print terse/.test(cmd)) return SERVICE_TERSE;
+        if (/^\/user active print terse/.test(cmd)) {
+          if (opts.sessionsThrow) throw new Error('timeout');
+          return opts.sessions !== undefined ? opts.sessions
+            : '0 when=2026-08-27 19:44:13 name=admin address=192.168.80.199 via=ssh group=full';
+        }
+
+        let m = /^\/ip service set \[find name="([^"]+)"\] address="([^"]*)"$/.exec(cmd);
+        if (m) {
+          // RouterOS refuses a value with any host bit set. Model that, or the
+          // fake would accept a command the device rejects.
+          for (const entry of m[2].split(',').filter(Boolean)) {
+            if (networkOf(entry) !== entry) throw new Error('value of address must have all host bits zero');
+          }
+          // A corrupting device mangles what it is told to STORE. Applying that
+          // to the self-heal's `address=""` too would model a device that
+          // cannot be cleared, which is the separate `fail` case below.
+          address.set(m[1], opts.corrupt && m[2] ? opts.corrupt(m[1], m[2]) : m[2]);
+          return '';
+        }
+        m = /^\/ip service set \[find name="([^"]+)"\] disabled=yes$/.exec(cmd);
+        if (m) { disabled.set(m[1], true); return ''; }
+
+        m = /^:put \[\/ip service get \[find name="([^"]+)"\] address\]$/.exec(cmd);
+        if (m) return `${(address.get(m[1]) || '').split(',').join(';')}\n`;
+        m = /^:put \[\/ip service get \[find name="([^"]+)"\] disabled\]$/.exec(cmd);
+        if (m) return `${disabled.get(m[1]) ? 'true' : 'false'}\n`;
+
+        if (/^\/tool mac-server mac-winbox set /.test(cmd)) { l2.winbox = /=(\S+)$/.exec(cmd)[1]; return ''; }
+        if (/^\/tool mac-server set /.test(cmd)) { l2.mac = /=(\S+)$/.exec(cmd)[1]; return ''; }
+        if (/^\/ip neighbor discovery-settings set /.test(cmd)) { l2.neighbor = /=(\S+)$/.exec(cmd)[1]; return ''; }
+        if (/mac-server mac-winbox get/.test(cmd)) return `${l2.winbox}\n`;
+        if (/mac-server get/.test(cmd)) return `${l2.mac}\n`;
+        if (/discovery-settings get/.test(cmd)) return `${l2.neighbor}\n`;
+        if (/romon get enabled/.test(cmd)) return `${opts.romon || 'false'}\n`;
+        return '';
+      }
+    };
+    return d;
+  };
+  const LAN = { address: '192.168.80.1/24' };
+  const setsOf = d => d.sent.filter(c => /^\/ip service set /.test(c));
+
+  const boundDev = mgmtDevice();
+  const boundProblems = await configureManagementServices(boundDev, LAN, MGMT_WANS, true);
+  test('every service is bound to the LAN network, disabled ones included', () => {
+    assert.deepStrictEqual(boundProblems, [], boundProblems.join('; '));
+    for (const name of SERVICE_NAMES) {
+      assert.strictEqual(boundDev.address.get(name), '192.168.80.0/24', `${name} was left unrestricted`);
+    }
+  });
+  test('a DISABLED service is bound too, so re-enabling it cannot reopen the WAN', () => {
+    // www-ssl ships disabled. Binding only what is enabled would leave a
+    // one-command path back to an exposed management plane.
+    assert.strictEqual(boundDev.disabled.get('www-ssl'), true, 'fixture check');
+    assert.strictEqual(boundDev.address.get('www-ssl'), '192.168.80.0/24');
+  });
+  test('the cleartext services are disabled', () => {
+    assert.strictEqual(boundDev.disabled.get('telnet'), true);
+    assert.strictEqual(boundDev.disabled.get('ftp'), true);
+    assert.strictEqual(boundDev.disabled.get('www'), false, 'only telnet and ftp');
+  });
+  test('ssh is bound LAST, after every other service proved the command shape', () => {
+    const order = setsOf(boundDev).filter(c => /address=/.test(c)).map(c => /name="([^"]+)"/.exec(c)[1]);
+    assert.strictEqual(order[order.length - 1], 'ssh', `ssh must be last, got ${order.join(',')}`);
+    assert.strictEqual(new Set(order).size, SERVICE_NAMES.length, 'every service exactly once');
+  });
+  test('layer-2 management is scoped to the LAN interface list', () => {
+    // MAC-telnet and MAC-winbox run over ethernet frames. They ignore
+    // /ip service address= AND the firewall input chain, so binding IP
+    // services alone would leave the whole admin surface reachable from the
+    // WAN broadcast domain.
+    assert.deepStrictEqual(boundDev.l2, { mac: 'LAN', winbox: 'LAN', neighbor: 'LAN' });
+  });
+  test('every device read this module sends is :put-wrapped', () => {
+    // A bare `get [find ...]` prints NOTHING over an SSH exec, so every
+    // verification read would come back empty and pass or fail at random.
+    const reads = boundDev.sent.filter(c => /\bget \[?find|\bget allowed-|\bget discover-|\bget enabled/.test(c));
+    assert.ok(reads.length > 0, 'expected some reads');
+    for (const cmd of reads) {
+      assert.ok(cmd.startsWith(':put ['), `a bare get reads back empty over SSH: ${cmd}`);
+    }
+  });
+  test('the value written has all host bits zero', () => {
+    for (const cmd of setsOf(boundDev).filter(c => /address=/.test(c))) {
+      const value = /address="([^"]*)"/.exec(cmd)[1];
+      for (const entry of value.split(',')) {
+        assert.strictEqual(networkOf(entry), entry, `RouterOS would reject ${entry}`);
+      }
+    }
+  });
+
+  console.log('\n=== Management plane: the lockout guard ===');
+
+  const offLan = mgmtDevice({
+    sessions: '0 when=2026-08-27 19:44:13 name=admin address=192.168.4.77 via=ssh group=full'
+  });
+  const offLanProblems = await configureManagementServices(offLan, LAN, MGMT_WANS, true);
+  test('an operator connected from off-LAN is NEVER locked out', () => {
+    // THE primary constraint. Locking an operator out of a remote gateway is
+    // far worse than the exposure this closes, so the restriction is skipped.
+    assert.strictEqual(setsOf(offLan).length, 0, `nothing may be set, sent: ${setsOf(offLan)}`);
+    for (const name of SERVICE_NAMES) assert.strictEqual(offLan.address.get(name), '');
+  });
+  test('a skipped restriction is a warning, not a failed apply', () => {
+    // configureRouterFirewall() already skips its drop rule the same way when
+    // it cannot verify the LAN list. Failing an otherwise-good apply because a
+    // SAFETY guard fired would be its own kind of breakage.
+    assert.deepStrictEqual(offLanProblems, [], offLanProblems.join('; '));
+  });
+  test('the layer-2 scoping is skipped with it, not applied half-way', () => {
+    assert.deepStrictEqual(offLan.l2, { mac: 'all', winbox: 'all', neighbor: 'all' });
+  });
+
+  const blindSession = mgmtDevice({ sessionsThrow: true });
+  await configureManagementServices(blindSession, LAN, MGMT_WANS, true);
+  test('not being able to tell who is connected counts as "do not restrict"', () => {
+    assert.strictEqual(setsOf(blindSession).length, 0, 'must not restrict on a guess');
+  });
+
+  const noSessions = mgmtDevice({ sessions: '' });
+  await configureManagementServices(noSessions, LAN, MGMT_WANS, true);
+  test('an empty session list means the read is wrong, not that nobody is on', () => {
+    // This very session must appear in that list. An empty answer is evidence
+    // the command or the parse is broken, and restricting on it would be
+    // restricting blind.
+    assert.strictEqual(setsOf(noSessions).length, 0);
+  });
+
+  const twoSessions = mgmtDevice({
+    sessions: '0 when=2026-08-27 19:44:13 name=admin address=192.168.80.199 via=ssh group=full\n'
+      + '1 when=2026-08-27 19:45:00 name=admin address=10.7.7.7 via=winbox group=full'
+  });
+  await configureManagementServices(twoSessions, LAN, MGMT_WANS, true);
+  test('ANY uncovered session blocks the restriction, not just this one', () => {
+    // There is no reliable way to tell which active session is ours, so every
+    // one of them has to survive.
+    assert.strictEqual(setsOf(twoSessions).length, 0);
+  });
+
+  const vpnLan = { address: '192.168.80.1/24', management: { allow: ['10.7.0.0/16'] } };
+  const vpn = mgmtDevice({
+    sessions: '0 when=2026-08-27 19:45:00 name=admin address=10.7.7.7 via=ssh group=full'
+  });
+  const vpnProblems = await configureManagementServices(vpn, vpnLan, MGMT_WANS, true);
+  test('an allow entry covering the operator lets the restriction land', () => {
+    assert.deepStrictEqual(vpnProblems, [], vpnProblems.join('; '));
+    assert.strictEqual(vpn.address.get('ssh'), '192.168.80.0/24,10.7.0.0/16');
+  });
+
+  console.log('\n=== Management plane: an allow entry cannot reach the WAN ===');
+
+  const wanOverlap = { address: '192.168.80.1/24', management: { allow: ['192.168.4.0/22'] } };
+  const overlap = mgmtDevice();
+  const overlapProblems = await configureManagementServices(overlap, wanOverlap, MGMT_WANS, true);
+  test('a PRIVATE allow entry that is actually the WAN subnet is dropped', () => {
+    // The test device's own ether1 sits on 192.168.4.0/22 behind another
+    // router. It passes every static "is this private" check, and it is the
+    // WAN. Only comparing against the addresses live on the uplinks catches it.
+    assert.ok(overlapProblems.some(p => /covers the uplink address 192\.168\.4\.24\/22/.test(p)),
+      overlapProblems.join('; '));
+    assert.strictEqual(overlap.address.get('ssh'), '192.168.80.0/24', 'the WAN range must not be bound');
+  });
+
+  const cgnat = mgmtDevice();
+  const cgnatWans = [{ name: 'primary', interface: 'ether1' }];
+  const cgnatProblems = await configureManagementServices(
+    cgnat, { address: '192.168.80.1/24', management: { allow: ['100.64.0.0/10'] } }, cgnatWans, true);
+  test('a CGNAT allow entry is kept when no uplink is inside it', () => {
+    assert.deepStrictEqual(cgnatProblems, [], cgnatProblems.join('; '));
+    assert.strictEqual(cgnat.address.get('ssh'), '192.168.80.0/24,100.64.0.0/10');
+  });
+
+  const wideLan = { address: '192.168.0.1/16' };
+  const wide = mgmtDevice({
+    sessions: '0 when=2026-08-27 19:44:13 name=admin address=192.168.80.199 via=ssh group=full'
+  });
+  const wideProblems = await configureManagementServices(wide, wideLan, MGMT_WANS, true);
+  test('a LAN wide enough to swallow the WAN binds NOTHING', () => {
+    // 192.168.0.0/16 contains the 192.168.4.24 uplink address. Binding to it
+    // would install an allow-list that ADMITS the WAN while reporting that
+    // management was locked to the LAN. Claiming a protection we are not
+    // providing is worse than not providing it, so nothing is bound and the
+    // firewall rule stays the honest single layer it already was.
+    assert.ok(wideProblems.some(p => /Renumber the LAN/.test(p)), wideProblems.join('; '));
+    assert.strictEqual(wide.address.get('ssh'), '',
+      'must not bind an allow-list that contains the uplink');
+  });
+
+  test('NOTHING is bound while any uplink has no address yet', () => {
+    // A private range proves nothing - this device's own WAN is RFC1918 - so
+    // the only real check is against the address actually on the uplink. The
+    // LAN range is NOT exempt from that: if an unresolved DHCP, LTE or PPPoE
+    // uplink later takes an address inside lanNetwork, binding to that network
+    // admits the WAN exactly as an allow entry would.
+    const pending = mgmtDevice({
+      sessions: '0 when=2026-08-27 19:44:13 name=admin address=192.168.80.199 via=ssh group=full',
+      wanAddresses: ''   // uplinks up, no addresses yet
+    });
+    return configureManagementServices(
+      pending,
+      { address: '192.168.80.1/24', management: { allow: ['10.9.0.0/16'] } },
+      MGMT_WANS, true
+    ).then(probs => {
+      assert.ok(probs.some(p => /left unrestricted because/.test(p)), probs.join('; '));
+      for (const [name, value] of pending.address) {
+        assert.strictEqual(value, '', `${name} must not be bound on unproven state, got '${value}'`);
+      }
+    });
+  });
+
+  test('a pppoe uplink is looked for on its CLIENT interface', () => {
+    // The address lands on pppoe-<name>, not the ethernet the config names.
+    // Without deriving it, the uplink looks addressless forever and nothing
+    // would ever bind.
+    const pppoeWans = [{ name: 'fibre', interface: 'ether1', type: 'pppoe' }];
+    const seenIfaces = [];
+    const dev = mgmtDevice({
+      sessions: '0 when=2026-08-27 19:44:13 name=admin address=192.168.80.199 via=ssh group=full',
+      // A pppoe-only router: the WAN list holds the parent, and the address is
+      // on the client interface.
+      members: '6 comment=wan:fibre type=pppoe list=WAN interface=ether1 dynamic=no',
+      wanAddresses: '0 address=203.0.113.9/32 interface=pppoe-fibre actual-interface=pppoe-fibre'
+    });
+    return readWanAddresses(dev, pppoeWans).then(res => {
+      seenIfaces.push(...res.addresses);
+      assert.ok(res.addresses.includes('203.0.113.9/32'), JSON.stringify(res));
+      // The REAL assertion: nothing is left unresolved. The parent ether1 never
+      // carries an address on a pppoe setup, so if it stayed in the watch set
+      // this router could never be hardened at all.
+      assert.deepStrictEqual(res.unresolved, [],
+        `the pppoe parent must not linger as unresolved: ${JSON.stringify(res)}`);
+    });
+  });
+
+  test('an address ON the pppoe parent is still checked for overlap', () => {
+    // The parent does not have to resolve, but it CAN carry an address - DHCP
+    // for reaching the upstream modem is common - and that address is on the
+    // WAN side just the same. Dropping the parent entirely would have made it
+    // invisible to the overlap check.
+    const dev = mgmtDevice({
+      sessions: '0 when=2026-08-27 19:44:13 name=admin address=192.168.80.199 via=ssh group=full',
+      members: '6 comment=wan:fibre type=pppoe list=WAN interface=ether1 dynamic=no',
+      wanAddresses: [
+        '0 address=203.0.113.9/32 interface=pppoe-fibre actual-interface=pppoe-fibre',
+        '1 address=192.168.100.2/24 interface=ether1 actual-interface=ether1'
+      ].join('\n')
+    });
+    return readWanAddresses(dev, [{ name: 'fibre', interface: 'ether1', type: 'pppoe' }]).then(res => {
+      assert.ok(res.addresses.includes('192.168.100.2/24'),
+        `the parent's own address must be checked: ${JSON.stringify(res)}`);
+      assert.deepStrictEqual(res.unresolved, [],
+        'but the parent must never be REQUIRED to have one');
+    });
+  });
+
+  console.log('\n=== Management plane: verification and self-heal ===');
+
+  const drifted = mgmtDevice({ corrupt: (name, value) => (name === 'www' ? '' : value) });
+  const driftProblems = await configureManagementServices(drifted, LAN, MGMT_WANS, true);
+  test('a service that does not read back restricted is reported', () => {
+    // "We issued the command" is not evidence. A silently-unrestricted service
+    // would otherwise pass the apply as a success.
+    assert.ok(driftProblems.some(p => /www service reads back as unrestricted/.test(p)),
+      driftProblems.join('; '));
+  });
+
+  const sshWrong = mgmtDevice({ corrupt: (name, value) => (name === 'ssh' ? '10.99.0.0/16' : value) });
+  const sshProblems = await configureManagementServices(sshWrong, LAN, MGMT_WANS, true);
+  test('an ssh restriction that excludes this session is CLEARED again', () => {
+    // RouterOS applies address= to new connections, so a wrong value does not
+    // drop the live session - the lockout only shows up on the next connect,
+    // when it is too late. Trading the exposure back for reachability is the
+    // right way round.
+    assert.strictEqual(sshWrong.address.get('ssh'), '', 'ssh must be reopened, not left excluding us');
+    assert.ok(sshProblems.some(p => /ssh service reads back/.test(p)), sshProblems.join('; '));
+  });
+  test('the self-heal still fails the apply rather than reporting success', () => {
+    assert.ok(sshProblems.length > 0);
+  });
+
+  const sshStuck = mgmtDevice({
+    corrupt: (name, value) => (name === 'ssh' ? '10.99.0.0/16' : value),
+    fail: cmd => /name="ssh"\] address=""/.test(cmd)
+  });
+  const stuckSshProblems = await configureManagementServices(sshStuck, LAN, MGMT_WANS, true);
+  test('an ssh restriction that excludes us AND cannot be cleared says URGENT', () => {
+    // The one outcome that needs a human immediately: the live session still
+    // works, and the next connect will not.
+    assert.ok(stuckSshProblems.some(p => /^URGENT/.test(p)), stuckSshProblems.join('; '));
+  });
+
+  const sshOk = mgmtDevice({
+    corrupt: (name, value) => (name === 'ssh' ? '192.168.80.0/24,10.99.0.0/16' : value)
+  });
+  const sshOkProblems = await configureManagementServices(sshOk, LAN, MGMT_WANS, true);
+  test('a wrong ssh value that still covers this session is rolled back, not cleared', () => {
+    // The device did not store what it was asked, so the run is undone like any
+    // other mismatch. The distinction that matters is that the SELF-HEAL did
+    // not fire: that path exists only for a value which would lock us out, and
+    // this one still covers this session.
+    assert.strictEqual(sshOk.address.get('ssh'), '',
+      'a mismatch aborts and rolls back, whatever the wrong value was');
+    // The distinction that still matters: this is an ordinary mismatch, not a
+    // lockout, so it must NOT escalate to the URGENT console-recovery path.
+    assert.ok(!sshOkProblems.some(p => /^URGENT/.test(p)), sshOkProblems.join('; '));
+    assert.ok(sshOkProblems.some(p => /reads back as/.test(p)), sshOkProblems.join('; '));
+  });
+
+  const setFails = mgmtDevice({ fail: cmd => /name="winbox"\] address=/.test(cmd) });
+  const setFailProblems = await configureManagementServices(setFails, LAN, MGMT_WANS, true);
+  test('a failed bind ABORTS and rolls everything back', () => {
+    // The old behaviour was to report it and keep going. That leaves a device
+    // half-restricted: if the failure lands before ssh, every alternative
+    // recovery path is bound while the lifeline is not. A partial management
+    // restriction is worse than none, so the run is undone.
+    assert.ok(setFailProblems.some(p => /Could not bind the winbox service/.test(p)),
+      setFailProblems.join('; '));
+    assert.strictEqual(setFails.address.get('ssh'), '',
+      'ssh must NOT be left bound after an aborted run');
+    for (const [name, value] of setFails.address) {
+      assert.strictEqual(value, '', `${name} should have been rolled back, got '${value}'`);
+    }
+  });
+
+  test('rollback restores what was there before, not just empty', () => {
+    // A device that already had a restriction must get THAT back, not blanked.
+    const preset = mgmtDevice({ fail: cmd => /name="winbox"\] address=/.test(cmd) });
+    preset.address.set('ssh', '10.5.0.0/16');
+    return configureManagementServices(preset, LAN, MGMT_WANS, true).then(() => {
+      assert.strictEqual(preset.address.get('ssh'), '10.5.0.0/16',
+        'the prior value must be restored, not cleared');
+    });
+  });
+
+  const l2Fails = mgmtDevice({ fail: cmd => /mac-server mac-winbox set/.test(cmd) });
+  const l2Problems = await configureManagementServices(l2Fails, LAN, MGMT_WANS, true);
+  test('a layer-2 surface that cannot be scoped is reported', () => {
+    assert.ok(l2Problems.some(p => /MAC-winbox server/.test(p)), l2Problems.join('; '));
+  });
+
+  const noLanList = mgmtDevice();
+  await configureManagementServices(noLanList, LAN, MGMT_WANS, false);
+  test('layer-2 scoping waits for a verified LAN list, IP binding does not', () => {
+    // Pointing MAC-winbox at a list that does not contain the bridge would
+    // remove the recovery path that exists for exactly this kind of mistake.
+    // The IP binding is checked against the live session instead, so it is safe
+    // either way.
+    assert.deepStrictEqual(noLanList.l2, { mac: 'all', winbox: 'all', neighbor: 'all' });
+    assert.strictEqual(noLanList.address.get('ssh'), '192.168.80.0/24');
+  });
+
+  const keepCleartext = mgmtDevice();
+  await configureManagementServices(
+    keepCleartext, { address: '192.168.80.1/24', management: { cleartext: true } }, MGMT_WANS, true);
+  test('cleartext: true keeps telnet and ftp, still bound to the LAN', () => {
+    // The escape hatch may soften the cleartext default; it may not reach the
+    // WAN. Nothing in lan.management can.
+    assert.strictEqual(keepCleartext.disabled.get('telnet'), false);
+    assert.strictEqual(keepCleartext.address.get('telnet'), '192.168.80.0/24');
+  });
+
+  const noLan = mgmtDevice();
+  const noLanProblems = await configureManagementServices(noLan, {}, MGMT_WANS, true);
+  test('no lan.address means no restriction, said out loud', () => {
+    assert.strictEqual(setsOf(noLan).length, 0);
+    assert.deepStrictEqual(noLanProblems, []);
+  });
+
+  test('lib/router.js sends no bare get either', () => {
+    // The same guard test/router.test.js already applies to lib/wifi-config.js.
+    // v6.2.2 shipped `/interface get [find name=X] running` with no :put and
+    // every read came back empty.
+    const src = require('fs').readFileSync(require.resolve('../lib/router'), 'utf8');
+    const bare = src.split('\n').filter(line =>
+      /exec\(/.test(line) && /\bget (\[find|allowed-|discover-|enabled)/.test(line) && !/:put \[/.test(line));
+    assert.deepStrictEqual(bare, [],
+      `these send a bare get and will read back empty:\n${bare.join('\n')}`);
+  });
+
+  console.log('\n=== Management plane: backup round-trip ===');
+
+  // backupRouterConfig() only needs the masquerade rule to decide it is looking
+  // at a router; everything else it cannot read is simply left out.
+  const backupDevice = (services) => ({
+    exec: async cmd => {
+      if (/nat print terse/.test(cmd)) return ' 0 chain=srcnat comment="router:masquerade"';
+      if (/^\/ip service print terse/.test(cmd)) return services;
+      if (/^\/ip address print detail/.test(cmd)) {
+        return 'Flags: D - dynamic\n 0   ;;; router:lan\n     address=192.168.80.1/24 interface=bridge';
+      }
+      return '';
+    }
+  });
+
+  const restricted = await backupRouterConfig(backupDevice([
+    '0 X name=telnet port=23 address=192.168.80.0/24 vrf=main',
+    '1 X name=ftp port=21 address=192.168.80.0/24 vrf=main',
+    '3   name=ssh port=22 address=192.168.80.0/24,10.7.0.0/16 vrf=main'
+  ].join('\n')));
+  test('an extra allow range round-trips out of the device', () => {
+    assert.deepStrictEqual(restricted.lan.management, { allow: ['10.7.0.0/16'] });
+  });
+  test('the LAN network itself is not written back as an allow entry', () => {
+    // lan.address already implies it, so recording it would put a redundant
+    // line in every backup.
+    assert.ok(!restricted.lan.management.allow.includes('192.168.80.0/24'));
+  });
+
+  const keptCleartext = await backupRouterConfig(backupDevice([
+    '0   name=telnet port=23 address=192.168.80.0/24 vrf=main',
+    '3   name=ssh port=22 address=192.168.80.0/24 vrf=main'
+  ].join('\n')));
+  test('a deliberately kept cleartext service round-trips', () => {
+    assert.deepStrictEqual(keptCleartext.lan.management, { cleartext: true });
+  });
+
+  const neverHardened = await backupRouterConfig(backupDevice(SERVICE_TERSE));
+  test('an UNHARDENED device records no management block at all', () => {
+    // This is the important one. telnet is enabled here, but ssh still listens
+    // on any address, so the device has simply never been hardened. Recording
+    // `cleartext: true` off the back of that would make a backup/restore cycle
+    // silently carry "leave telnet on" forward for ever.
+    assert.strictEqual(neverHardened.lan.management, undefined);
+  });
+
+  console.log('\n=== Management plane: validation ===');
+
+  const mgmtBase = { lan: { address: '192.168.80.1/24' }, wan: [{ name: 'a', interface: 'ether1' }] };
+  const withMgmt = management => validateRouterConfig({
+    ...mgmtBase, lan: { ...mgmtBase.lan, management }
+  });
+
+  test('a public allow range is rejected by validation, before any device is touched', () => {
+    assert.ok(withMgmt({ allow: ['8.8.8.0/24'] }).errors.some(e => /publicly routable/.test(e)));
+  });
+  test('a private allow range passes, with a warning that it widens reach', () => {
+    const { errors, warnings } = withMgmt({ allow: ['10.7.0.0/16'] });
+    assert.deepStrictEqual(errors, []);
+    assert.ok(warnings.some(w => /widens management beyond the LAN/.test(w)), warnings.join('; '));
+  });
+  test('a stringy cleartext is rejected, because it is compared with === true', () => {
+    assert.ok(withMgmt({ cleartext: 'true' }).errors.some(e => /must be true or false/.test(e)));
+  });
+  test('keeping cleartext warns about the password crossing the LAN in clear', () => {
+    assert.ok(withMgmt({ cleartext: true }).warnings.some(w => /clear text/.test(w)));
+  });
+  test('lan.management must be a mapping', () => {
+    assert.ok(withMgmt(['10.0.0.0/8']).errors.some(e => /must be a mapping/.test(e)));
+    assert.ok(withMgmt({ allow: '10.0.0.0/8' }).errors.some(e => /must be a list/.test(e)));
+  });
+  test('a config with no management block is unaffected', () => {
+    assert.deepStrictEqual(validateRouterConfig(mgmtBase).errors, []);
   });
 
   console.log('\n=== SSH exec must reject RouterOS failures ===');
