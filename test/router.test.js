@@ -15,7 +15,7 @@ const {
   normalizeWans, wanMemberComment, parseWanMemberComment,
   resolveHostAddress, configureMssClamp, mssClampRuleIsCurrent, terseRecords,
   parseTerseRecord, configureManagementServices, managementAllowList,
-  activeSessionAddresses, parseAddressList, backupRouterConfig
+  activeSessionAddresses, parseAddressList, backupRouterConfig, readWanAddresses
 } = require('../lib/router');
 const { parseCountry } = require('../lib/backup');
 const { MikroTikSSH, redactSecrets } = require('../lib/ssh-client');
@@ -1746,10 +1746,12 @@ test('omitting mssClamp is valid and leaves it on', () => {
       'must not bind an allow-list that contains the uplink');
   });
 
-  test('an allow entry is dropped when an uplink has no address yet', () => {
-    // A private range proves nothing - this device's own WAN is RFC1918. The
-    // only real check is against the address actually on the uplink, and a
-    // DHCP or LTE uplink can acquire one inside an allowed range moments later.
+  test('NOTHING is bound while any uplink has no address yet', () => {
+    // A private range proves nothing - this device's own WAN is RFC1918 - so
+    // the only real check is against the address actually on the uplink. The
+    // LAN range is NOT exempt from that: if an unresolved DHCP, LTE or PPPoE
+    // uplink later takes an address inside lanNetwork, binding to that network
+    // admits the WAN exactly as an allow entry would.
     const pending = mgmtDevice({
       sessions: '0 when=2026-08-27 19:44:13 name=admin address=192.168.80.199 via=ssh group=full',
       wanAddresses: ''   // uplinks up, no addresses yet
@@ -1759,9 +1761,28 @@ test('omitting mssClamp is valid and leaves it on', () => {
       { address: '192.168.80.1/24', management: { allow: ['10.9.0.0/16'] } },
       MGMT_WANS, true
     ).then(probs => {
-      assert.ok(probs.some(p => /lan\.management\.allow was ignored/.test(p)), probs.join('; '));
-      assert.strictEqual(pending.address.get('ssh'), '192.168.80.0/24',
-        'the LAN still binds; only the unprovable extra range is dropped');
+      assert.ok(probs.some(p => /left unrestricted because/.test(p)), probs.join('; '));
+      for (const [name, value] of pending.address) {
+        assert.strictEqual(value, '', `${name} must not be bound on unproven state, got '${value}'`);
+      }
+    });
+  });
+
+  test('a pppoe uplink is looked for on its CLIENT interface', () => {
+    // The address lands on pppoe-<name>, not the ethernet the config names.
+    // Without deriving it, the uplink looks addressless forever and nothing
+    // would ever bind.
+    const pppoeWans = [{ name: 'fibre', interface: 'ether1', type: 'pppoe' }];
+    const seenIfaces = [];
+    const dev = mgmtDevice({
+      sessions: '0 when=2026-08-27 19:44:13 name=admin address=192.168.80.199 via=ssh group=full',
+      wanAddresses: '0 address=203.0.113.9/32 interface=pppoe-fibre actual-interface=pppoe-fibre'
+    });
+    return readWanAddresses(dev, pppoeWans).then(res => {
+      seenIfaces.push(...res.addresses);
+      assert.deepStrictEqual(res.unresolved.filter(i => i === 'pppoe-fibre'), [],
+        'pppoe-fibre must be recognised as resolved once it has an address');
+      assert.ok(res.addresses.includes('203.0.113.9/32'), JSON.stringify(res));
     });
   });
 
@@ -1804,11 +1825,18 @@ test('omitting mssClamp is valid and leaves it on', () => {
   const sshOk = mgmtDevice({
     corrupt: (name, value) => (name === 'ssh' ? '192.168.80.0/24,10.99.0.0/16' : value)
   });
-  await configureManagementServices(sshOk, LAN, MGMT_WANS, true);
-  test('a wrong ssh value that still covers this session is not cleared', () => {
-    // Clearing it would reopen the management plane to answer a mismatch that
-    // is not a lockout. Report it and leave the restriction standing.
-    assert.strictEqual(sshOk.address.get('ssh'), '192.168.80.0/24,10.99.0.0/16');
+  const sshOkProblems = await configureManagementServices(sshOk, LAN, MGMT_WANS, true);
+  test('a wrong ssh value that still covers this session is rolled back, not cleared', () => {
+    // The device did not store what it was asked, so the run is undone like any
+    // other mismatch. The distinction that matters is that the SELF-HEAL did
+    // not fire: that path exists only for a value which would lock us out, and
+    // this one still covers this session.
+    assert.strictEqual(sshOk.address.get('ssh'), '',
+      'a mismatch aborts and rolls back, whatever the wrong value was');
+    // The distinction that still matters: this is an ordinary mismatch, not a
+    // lockout, so it must NOT escalate to the URGENT console-recovery path.
+    assert.ok(!sshOkProblems.some(p => /^URGENT/.test(p)), sshOkProblems.join('; '));
+    assert.ok(sshOkProblems.some(p => /reads back as/.test(p)), sshOkProblems.join('; '));
   });
 
   const setFails = mgmtDevice({ fail: cmd => /name="winbox"\] address=/.test(cmd) });

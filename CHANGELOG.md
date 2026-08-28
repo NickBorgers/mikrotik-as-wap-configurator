@@ -170,6 +170,22 @@ a remote router. Review caught it, and these are the corrections:
   answer used to mean "virtual AP". Getting that wrong means bouncing a *master*
   radio and cutting every client, possibly including the operator's own link.
 
+A second review round found three more, all fixed:
+
+- **A service is added to the rollback set the moment its write lands**, not
+  after it verifies. Adding it on success meant the one service whose write
+  landed but whose read-back failed was the one service never rolled back.
+- **Rollback writes are verified too.** "Accepted but did no work" is the exact
+  failure that made immediate verification necessary going in, and it is no
+  less possible on the way back out. A rollback that does not read back correct
+  reports `URGENT` with console instructions.
+- **Unknown uplink state now binds nothing at all**, where it previously still
+  bound the LAN range. The LAN is not exempt: if an unresolved DHCP, LTE or
+  PPPoE uplink later takes an address inside it, binding to that network admits
+  the WAN exactly as an allow entry would. A PPPoE uplink's address also lands
+  on `pppoe-<name>` rather than the ethernet the config names, so that
+  interface is now derived — without it the uplink looks addressless forever.
+
 One finding was accepted rather than fixed: a polling round that has already
 started runs to completion even past its deadline, so a round over many
 unresponsive radios can overrun by up to 30s each. Cutting the round short
