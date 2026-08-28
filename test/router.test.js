@@ -17,6 +17,8 @@ const {
   parseTerseRecord
 } = require('../lib/router');
 const { parseCountry } = require('../lib/backup');
+const { MikroTikSSH, redactSecrets } = require('../lib/ssh-client');
+const { EventEmitter } = require('events');
 const {
   ensureWifiInterfaceUp, recheckPendingMasters, runningQuery
 } = require('../lib/wifi-config');
@@ -1250,6 +1252,116 @@ test('omitting mssClamp is valid and leaves it on', () => {
     const d = recheckDevice([]);
     assert.deepStrictEqual(await recheckPendingMasters(d, [], fastPoll()), []);
     assert.strictEqual(d.sent.length, 0, 'must not talk to the device for an empty list');
+  });
+
+  console.log('\n=== SSH exec must reject RouterOS failures ===');
+
+  // RouterOS prints its errors to STDOUT and leaves stderr empty, so exec()
+  // used to resolve on a rejected command and hand back the error text as if
+  // it were data. Every try/catch around mt.exec in this codebase was therefore
+  // decorative. It DOES set a non-zero exit status, verified on live hardware.
+  const fakeSsh = (opts = {}) => {
+    // NOT destructuring defaults: `code: undefined` must stay undefined, since
+    // a missing exit status is exactly one of the cases under test. A default
+    // would silently turn it into 0 and the test would pass vacuously.
+    const stdout = opts.stdout || '';
+    const stderr = opts.stderr || '';
+    const code = 'code' in opts ? opts.code : 0;
+    const signal = opts.signal;
+    const mt = new MikroTikSSH('192.0.2.1', 'admin', 'admin');
+    mt.connected = true;
+    mt.conn = {
+      exec: (cmd, cb) => {
+        const stream = new EventEmitter();
+        stream.stderr = new EventEmitter();
+        cb(null, stream);
+        setImmediate(() => {
+          if (stdout) stream.emit('data', Buffer.from(stdout));
+          if (stderr) stream.stderr.emit('data', Buffer.from(stderr));
+          stream.emit('close', code, signal);
+        });
+      }
+    };
+    return mt;
+  };
+  const rejects = async mt => {
+    try { await mt.exec('/anything'); return null; } catch (e) { return e.message; }
+  };
+
+  test('a successful command resolves with its output', async () => {
+    const out = await fakeSsh({ stdout: '2d20:57:00\r\n', code: 0 }).exec('/x');
+    assert.strictEqual(out, '2d20:57:00\r\n');
+  });
+
+  test('a non-zero exit REJECTS, even with empty stderr', async () => {
+    // The exact shape observed on a Chateau LTE6 running RouterOS 7.18.2.
+    const msg = await rejects(fakeSsh({
+      stdout: "invalid value for argument address:\r\n    value of address must have ip address before '/'\n",
+      stderr: '', code: 1
+    }));
+    assert.ok(msg, 'must not resolve a rejected command');
+    assert.ok(/exit 1/.test(msg), msg);
+    assert.ok(/invalid value for argument address/.test(msg),
+      `the device's own explanation must survive: ${msg}`);
+  });
+
+  test('stderr still rejects, as it always did', async () => {
+    const msg = await rejects(fakeSsh({ stderr: 'ssh: connection lost', code: 0 }));
+    assert.ok(/connection lost/.test(msg), msg);
+  });
+
+  test('a signal kill rejects', async () => {
+    const msg = await rejects(fakeSsh({ code: null, signal: 'SIGKILL' }));
+    assert.ok(/signal SIGKILL/.test(msg), msg);
+  });
+
+  test('a non-zero exit with no output still rejects, legibly', async () => {
+    const msg = await rejects(fakeSsh({ stdout: '', code: 1 }));
+    assert.ok(/exit 1/.test(msg) && /no output/.test(msg), msg);
+  });
+
+  test('a killed command NEVER leaks the command text', async () => {
+    // WiFi commands carry security.passphrase="..." and callers log e.message.
+    // An error must not be how a wireless password reaches a CI log.
+    const mt = fakeSsh({ code: null, signal: 'SIGKILL' });
+    let msg = '';
+    try {
+      await mt.exec('/interface/wifi set wifi2 security.passphrase="Q#F4Gm8jFM"');
+    } catch (e) { msg = e.message; }
+    assert.ok(/signal SIGKILL/.test(msg), msg);
+    assert.ok(!/Q#F4Gm8jFM/.test(msg), `passphrase leaked into the error: ${msg}`);
+    assert.ok(!/passphrase/i.test(msg), `command text leaked into the error: ${msg}`);
+  });
+
+  test('secrets in device OUTPUT are redacted too', () => {
+    const dirty = '/interface/wifi set x security.passphrase="Q#F4Gm8jFM" ssid="X"';
+    const clean = redactSecrets(dirty);
+    assert.ok(!/Q#F4Gm8jFM/.test(clean), clean);
+    assert.ok(/ssid="X"/.test(clean), 'non-secret arguments must survive for diagnosis');
+    assert.strictEqual(redactSecrets('no such item (/ip/service/get; line 1)'),
+      'no such item (/ip/service/get; line 1)', 'ordinary errors must pass through untouched');
+  });
+
+  test('a MISSING exit status is distinguished from a rejection', async () => {
+    // ssh2 reports no code when the channel closes without an exit-status
+    // request. Calling that "exit null" sends someone hunting a RouterOS
+    // rejection that never happened - but it must still not resolve.
+    for (const code of [null, undefined]) {
+      const msg = await rejects(fakeSsh({ stdout: 'partial', code }));
+      assert.ok(msg, 'an unknown outcome must not resolve');
+      assert.ok(/without an exit status/.test(msg), msg);
+      assert.ok(!/exit null|exit undefined/.test(msg), `misleading message: ${msg}`);
+    }
+  });
+
+  test('legitimate output containing error words is NOT rejected', async () => {
+    // The guard is the EXIT CODE, never the text. `/log print` genuinely
+    // returns lines containing "failure" and "error"; matching on those would
+    // reject real data. Do not "improve" this into a string heuristic.
+    const logLines = '18:25:02 system,error,critical router rebooted without proper shutdown\n'
+      + '18:26:10 script,warning wan-notify: send failed, will retry\n';
+    const out = await fakeSsh({ stdout: logLines, code: 0 }).exec('/log print');
+    assert.strictEqual(out, logLines, 'exit 0 means success no matter what the text says');
   });
 
   console.log('\n=== Host resolution (lockout guard) ===');

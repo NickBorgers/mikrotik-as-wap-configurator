@@ -1,5 +1,73 @@
 # Changelog
 
+## [6.2.4] - 2026-08-28 - Failed Commands Now Actually Fail
+
+`MikroTikSSH.exec()` resolved whenever stderr was empty. RouterOS prints its
+errors to **stdout** and leaves stderr empty, so a rejected command looked
+exactly like a successful one, and its error message was handed back as if it
+were data.
+
+Every `try { await mt.exec(...) } catch` in this codebase was therefore
+decorative. Read-back verification was the only thing that ever caught a failed
+write, and code that relied on a throw — including safety checks — was relying
+on something that could not happen.
+
+Verified on a live Chateau LTE6 running RouterOS 7.18.2:
+
+```
+/ip service set [find name="ssh"] address=999.999.999.999/99
+  exit 1, stderr "", stdout "invalid value for argument address: ..."
+/bogus/command
+  exit 1, stderr "", stdout "syntax error (line 1 column 7)"
+:put [/interface/wifi/get [find name="nope"] master-interface]
+  exit 1, stderr "", stdout "no such item (...)"
+```
+
+RouterOS does set a non-zero **exit status**, and `exec()` was ignoring it. It
+now rejects on a non-zero exit, on a signal kill, and on stderr as before.
+
+### Why the exit code and not the text
+
+Matching on the output would be worse than useless. `/log print` legitimately
+returns lines containing "failure" and "error"; rejecting those would break
+reads of real data. The exit status is unambiguous. There is a test asserting
+that error-looking text with exit 0 still resolves, so this does not get
+"improved" into a string heuristic later.
+
+### What newly fails
+
+Almost nothing, by design. Checked against real hardware: `remove`, `set` and
+`disable` against an empty `[find ...]`, and `print`/`find` with no matches,
+all exit 0 — so the idempotent patterns this tool is built on are unaffected.
+
+What does now throw is `get` on an item that does not exist, which is a genuine
+error the caller should handle, and any command RouterOS rejects outright.
+Those previously passed silently.
+
+Handled errors are respected. `:do {...} on-error={...}` catching a runtime
+error exits 0, so deliberately-tolerated failures do not start throwing.
+Compound commands separated by `;` propagate a failure in any statement.
+
+One class this does **not** catch: a command that is accepted but answers
+nothing, such as a bare `/interface get ... running` without `:put`. That exits
+0. It is guarded separately by the command-form tests added in 6.2.3.
+
+### Errors never carry secrets
+
+Callers routinely log `e.message`, and WiFi commands carry
+`security.passphrase="..."`. Errors no longer include the command text at all,
+and device output is passed through a redactor before it reaches an exception,
+so a failure cannot be the reason a wireless password lands in a console or a
+CI log.
+
+### A missing exit status is its own case
+
+`ssh2` reports no code when a channel closes without an exit-status request.
+That is not a RouterOS rejection, and reporting it as "exit null" would send
+someone hunting a device error that never happened. It gets a distinct message
+— and still rejects, because an unknown outcome must not be reported as
+success.
+
 ## [6.2.3] - 2026-08-26 - Fix: `get` Needs `:put` (6.2.2 Did Not Work)
 
 **6.2.2 did not work.** The SSID verification it added never functioned on real

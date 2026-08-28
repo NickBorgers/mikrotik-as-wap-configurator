@@ -349,6 +349,29 @@ const BAND_TO_INTERFACE = {
 - A comma in `notify.title` would split the RouterOS `http-header-field` into a second header. Validation rejects it.
 - A POST to an unreachable endpoint took ~10s to give up and blocks the tick, so an interval under 10s warns.
 
+**RouterOS Reports Errors On STDOUT With A NON-ZERO EXIT (fixed in 6.2.4)**
+- A rejected command writes its error to **stdout**, leaves **stderr empty**, and exits
+  **non-zero**. Before 6.2.4 `exec()` only rejected on stderr, so it resolved and returned
+  the error text as data. Every `try/catch` around `mt.exec` was decorative.
+- `exec()` now rejects on non-zero exit, on a signal, and on stderr. Verified on hardware.
+- Detect failure by the EXIT CODE, never by matching the output. `/log print` legitimately
+  contains "failure" and "error"; a string heuristic would reject real data. There is a
+  test pinning this - do not replace it with pattern matching.
+- Idempotent patterns are unaffected (verified): `remove`/`set`/`disable` on an empty
+  `[find ...]` and `print`/`find` with no matches all exit 0. `get` on a missing item
+  exits 1 and now throws, which is correct.
+- Exit codes do NOT catch a command that is accepted but answers nothing (a bare
+  `get` without `:put`). That is the separate 6.2.3 trap - see below.
+- Handled errors are respected (verified): `:do {...} on-error={...}` catching a RUNTIME
+  error exits 0. A SYNTAX error inside the block still exits 1, because it fails at parse
+  time and on-error never runs. Compound `a; b` propagates a failure in either statement.
+- Errors must NEVER contain the command text: WiFi commands carry
+  `security.passphrase="..."` and callers log `e.message`. Device output is passed through
+  `redactSecrets()` first. There is a test asserting a passphrase cannot reach an error.
+- A MISSING exit status (ssh2 reports null/undefined when the channel closes without an
+  exit-status request) is distinct from a non-zero one. It still rejects - unknown is not
+  success - but with its own message, not a misleading "exit null".
+
 **RouterOS `get` MUST Be Wrapped In `:put` (learned the hard way in 6.2.2)**
 - `/interface get [find name=X] running` sent over an SSH exec prints NOTHING. RouterOS
   returns the value to an interactive console, not to stdout. Always:
