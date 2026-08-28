@@ -349,6 +349,20 @@ const BAND_TO_INTERFACE = {
 - A comma in `notify.title` would split the RouterOS `http-header-field` into a second header. Validation rejects it.
 - A POST to an unreachable endpoint took ~10s to give up and blocks the tick, so an interval under 10s warns.
 
+**Management Binding Requires Every Uplink To Have An Address**
+- `configureManagementServices()` binds NOTHING - not even the LAN range - unless every
+  uplink that must resolve holds an address. An unresolved DHCP/LTE/PPPoE uplink can take
+  one inside `lanNetwork` or an allow entry moments later, which would make the binding
+  admit the WAN.
+- Consequence: a standby uplink that is unplugged, or an LTE backup with no signal, defers
+  hardening indefinitely. That is intended. Do NOT add an override that skips unresolved
+  uplinks - it re-opens exactly the hole this exists to close.
+- TWO sets, deliberately: `mustResolve` (must have an address before any range is trusted)
+  and `checkAddresses` (any address present must be checked for overlap). A PPPoE PARENT is
+  in the second only: it normally has no address, so requiring one makes the feature
+  permanently inert, but it CAN carry one (DHCP to reach the modem) and that address is on
+  the WAN side. Conflating the two sets broke it in both directions during review.
+
 **RouterOS Reports Errors On STDOUT With A NON-ZERO EXIT (fixed in 6.2.4)**
 - A rejected command writes its error to **stdout**, leaves **stderr empty**, and exits
   **non-zero**. Before 6.2.4 `exec()` only rejected on stderr, so it resolved and returned

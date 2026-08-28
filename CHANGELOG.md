@@ -188,6 +188,18 @@ A second review round found three more, all fixed:
   parent never carries an address, so keeping both would leave the router
   permanently unhardenable.
 
+### Known limitation
+
+**Every configured uplink must hold an address at the moment of the apply**, or
+nothing is bound. A standby link that is unplugged, or an LTE backup with no
+signal, is a perfectly normal multi-WAN state and will defer the hardening
+until it comes up. The apply says so explicitly and names the uplink.
+
+There is deliberately no override. Ignoring an uplink whose address is unknown
+is precisely how management ends up reachable from the WAN: an unresolved DHCP
+or LTE link can take an address inside an allowed range moments after the apply
+finishes. The firewall rule keeps the uplinks closed in the meantime.
+
 One finding was accepted rather than fixed: a polling round that has already
 started runs to completion even past its deadline, so a round over many
 unresponsive radios can overrun by up to 30s each. Cutting the round short

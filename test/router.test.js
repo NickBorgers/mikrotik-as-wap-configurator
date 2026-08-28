@@ -1794,6 +1794,27 @@ test('omitting mssClamp is valid and leaves it on', () => {
     });
   });
 
+  test('an address ON the pppoe parent is still checked for overlap', () => {
+    // The parent does not have to resolve, but it CAN carry an address - DHCP
+    // for reaching the upstream modem is common - and that address is on the
+    // WAN side just the same. Dropping the parent entirely would have made it
+    // invisible to the overlap check.
+    const dev = mgmtDevice({
+      sessions: '0 when=2026-08-27 19:44:13 name=admin address=192.168.80.199 via=ssh group=full',
+      members: '6 comment=wan:fibre type=pppoe list=WAN interface=ether1 dynamic=no',
+      wanAddresses: [
+        '0 address=203.0.113.9/32 interface=pppoe-fibre actual-interface=pppoe-fibre',
+        '1 address=192.168.100.2/24 interface=ether1 actual-interface=ether1'
+      ].join('\n')
+    });
+    return readWanAddresses(dev, [{ name: 'fibre', interface: 'ether1', type: 'pppoe' }]).then(res => {
+      assert.ok(res.addresses.includes('192.168.100.2/24'),
+        `the parent's own address must be checked: ${JSON.stringify(res)}`);
+      assert.deepStrictEqual(res.unresolved, [],
+        'but the parent must never be REQUIRED to have one');
+    });
+  });
+
   console.log('\n=== Management plane: verification and self-heal ===');
 
   const drifted = mgmtDevice({ corrupt: (name, value) => (name === 'www' ? '' : value) });
