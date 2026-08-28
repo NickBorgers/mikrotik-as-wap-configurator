@@ -1,5 +1,142 @@
 # Changelog
 
+## [6.2.5] - 2026-08-28 - Management Cannot Reach the WAN, and a Realistic VAP Settle Budget
+
+Two fixes. The first closes a real exposure in the `role: router` path; the
+second stops that same role failing applies on healthy hardware.
+
+### 1. `/ip service` is bound to the LAN, not left listening on any address
+
+On a live router configured by this tool, every management service listened on
+`address=""` — any source:
+
+```
+0   name="telnet" port=23   address=""
+2   name="www" port=80      address=""
+3   name="ssh" port=22      address=""
+6   name="winbox" port=8291 address=""
+```
+
+The only thing keeping that off the uplinks was a single firewall rule,
+`router:input-drop-wan`. That rule works — 34,937 packets dropped on the test
+device, and no logins from the WAN-side subnet — but it is one object. Delete
+it, reorder it, or add a permissive input rule above it, and the entire
+management surface is on the internet behind whatever password the device has.
+
+Now every entry in `/ip service` is bound to the LAN network derived from
+`lan.address`. The check moves into RouterOS's own accept path, where no
+firewall edit can reach it. The firewall rule stays; the two layers fail
+independently.
+
+Also closed, because they bypass both of those layers:
+
+- **telnet and ftp are disabled.** Cleartext, and this tool drives devices over
+  SSH. Opt out with `lan.management.cleartext: true` — they stay LAN-bound.
+- **MAC-telnet, MAC-winbox and neighbor discovery are scoped to the `LAN`
+  interface list.** These run over layer 2. They ignore `/ip service address=`
+  *and* the IP firewall input chain, so an attacker on the WAN broadcast domain
+  reaches them without needing an IP at all. RouterOS defconf sets them
+  correctly; nothing enforced or verified it.
+- **Disabled services are bound too**, so re-enabling one by hand later cannot
+  reopen the WAN.
+
+RoMON is reported when enabled, not switched off. It is layer 2 as well, this
+tool does not own it, and it is off from the factory.
+
+**No user config can undo this.** The escape hatch, `lan.management.allow`,
+takes additional source ranges, and its grammar cannot express a WAN address:
+every entry must be non-globally-routable (RFC1918, CGNAT, link-local,
+loopback), which is checked on the entry's *network* so `10.0.0.1/1` cannot
+smuggle in half the internet. Private is not sufficient on its own — the test
+device's own `ether1` sits on `192.168.4.0/22` behind another router — so every
+entry is checked again at apply time against the addresses actually on the
+uplinks, and one that covers a live uplink address is dropped and reported.
+
+### The lockout guard, which outranks all of the above
+
+This tool connects over SSH. Restricting `/ip service` while the operator is
+reaching the device from somewhere the restriction excludes locks them out of a
+remote gateway permanently. That is far worse than the exposure being fixed, so
+the device is asked who is connected to it right now:
+
+```
+/user active print terse
+0 when=2026-08-28 12:14:40 name=admin address=192.168.80.199 via=ssh group=full
+```
+
+Unless **every** active session is covered by the allow list, nothing is
+restricted. The device's own view is used rather than this process's idea of its
+source address, because a jump host, a NAT gateway or a VPN concentrator all
+rewrite it on the way. Not being able to tell counts as not covered — an
+unreadable session list, or an empty one, both mean "restrict nothing".
+
+Skipping is a loud warning, not a failed apply, matching what the firewall step
+already does when it cannot verify the LAN list. The WAN drop rule still stands
+in that case.
+
+Two more consequences worth knowing:
+
+- Changing `lan.address` leaves the operator on the old subnet, so the first
+  apply skips the restriction and the second one — made over the new address —
+  lands it. This is the same two-run shape the LAN address migration already
+  has.
+- SSH is bound **last**, after every other service has proved the command shape.
+  If it still reads back excluding the current session, the restriction is
+  cleared again automatically: RouterOS applies `address=` to new connections
+  only, so a wrong value does not drop the live session and the lockout would
+  not surface until the next connect. The apply still fails.
+
+Every write is verified by reading it back, and this turned out to matter more
+than expected: **RouterOS reports an invalid argument on stdout, not stderr**,
+so the SSH client resolves rather than throwing. "The command did not error" is
+not evidence that it did anything.
+
+`lan.management` round-trips through backup, but only when the restriction is
+demonstrably in place. A device whose `ssh` service still listens on any address
+has simply never been hardened, and recording `cleartext: true` off the back of
+that would let a backup/restore cycle silently carry "leave telnet on" forward
+for ever.
+
+### 2. The virtual-AP settle budget is a poll, not a 6-second guess
+
+6.2.3 waited a flat 3 seconds after toggling a virtual AP and gave up after two
+toggles — about 6 seconds of settle. On the live Chateau that produced a **false
+negative**: the apply exhausted the budget, reported
+`wifi2-ssid2 is configured but not running`, exited INCOMPLETE, and the
+interface came up on its own moments later. A second apply on the same device
+recovered inside the budget and passed. So it was marginal, and it failed in the
+direction that breaks any automation gating on the exit code.
+
+After the toggle the tool now polls `running` until the interface comes up or a
+60-second budget expires, instead of sleeping a fixed moment and asking once.
+Polling costs nothing on a healthy interface — it returns on the first read —
+so the budget is only spent on a genuine failure, which is what makes a generous
+one nearly free. The budget is **shared** across the retries rather than granted
+per retry, so raising `attempts` divides it instead of multiplying the wait.
+
+The honest failure is kept: when the budget genuinely expires the problem is
+still reported, with the device's own explanation. And the master-radio safety
+property is unchanged — a master is never toggled and never enters the settle
+poll, because it carries every associated client, very possibly including the
+operator running this tool over that radio.
+
+`recheckPendingMasters()` already did exactly this polling, correctly: one
+shared deadline, a wall clock rather than accumulated sleep time, bounded and
+atomic rounds. Both callers now share that one implementation
+(`pollUntilRunning`) rather than keeping a second copy to drift.
+
+### Verified on hardware
+
+Every new device command was run against a live Chateau LTE6 (RouterOS 7.18.2)
+before being relied on, and the tests assert command *form*, not just behaviour:
+
+- `address=` rejects any value with a host bit set, so the LAN network is masked
+  before it is sent.
+- `:put [... get address]` renders a multi-entry list **semicolon**-separated
+  while `print terse` renders the same list **comma**-separated. Both are parsed.
+- `/tool mac-server print terse` is a syntax error; those settings must be read
+  with `:put [... get ...]`.
+
 ## [6.2.4] - 2026-08-28 - Failed Commands Now Actually Fail
 
 `MikroTikSSH.exec()` resolved whenever stderr was empty. RouterOS prints its
