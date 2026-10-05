@@ -223,7 +223,7 @@ lan:
 wan:
   - name: primary
     interface: ether1
-    type: dhcp        # dhcp | static | pppoe | lte
+    type: dhcp        # dhcp | static | pppoe | lte | wifi
     distance: 1       # lower wins
     probe: 8.8.8.8
   - name: backup
@@ -287,6 +287,53 @@ like the failover had failed.
 
 **The tool owns the default routes.** Every uplink is created with
 `add-default-route=no`, so nothing competes with the failover routes.
+
+### Using a WiFi network as an uplink
+
+Some sites have no wired uplink, only a WiFi network you are allowed to join.
+A `wifi` uplink turns one radio into a **station**: a client that joins that
+network, gets an address by DHCP, and is routed and NATed like any other uplink.
+
+```yaml
+wan:
+  - name: primary
+    type: wifi
+    band: 2.4GHz              # which radio; the tool finds its interface
+    ssid: "Office on Main "   # exact, including any trailing space
+    passphrase: secret-here
+    distance: 1
+  - name: backup
+    interface: lte1
+    type: lte
+    distance: 2
+
+ssids:                        # your own SSIDs go on the OTHER radio
+  - ssid: MyNetwork
+    passphrase: another-secret
+    bands: [5GHz]
+```
+
+A radio is either a station or an access point, never both. So:
+
+- A wifi uplink names a `band`, not an `interface`. Which radio carries which
+  band differs between models.
+- Validation rejects an SSID, or a `wifi.<band>` block, on the uplink's band.
+  The station uses whatever channel its upstream access point chose.
+- The apply leaves the uplink radio alone when it configures access points. It
+  is never disabled for having no SSIDs.
+
+Pick the band from a scan, not by habit. Run
+`/interface/wifi scan <radio> duration=20` on each radio and compare signal
+strength. A strong 2.4GHz link usually beats a weak 5GHz one. 5GHz also has
+DFS channels (52–144 in the US): when radar is detected there, the upstream
+access point must leave the channel, and your uplink drops until it returns.
+
+The apply waits up to 45 seconds for the station to associate and get a lease.
+If it does not, the apply prints `/interface/wifi monitor` output and goes on.
+A wrong passphrase shows up there.
+
+Backup writes the uplink back as `type: wifi` with its band, SSID and
+passphrase. It does not list the upstream network as one of your SSIDs.
 
 ### Getting told when it fails over
 

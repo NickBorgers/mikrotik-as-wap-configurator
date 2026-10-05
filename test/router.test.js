@@ -1519,6 +1519,24 @@ test('omitting mssClamp is valid and leaves it on', () => {
   ].join('\n');
   const SERVICE_NAMES = ['telnet', 'ftp', 'www', 'ssh', 'www-ssl', 'api', 'winbox', 'api-ssl'];
 
+  // Real /ip service output from the same Chateau on RouterOS 7.24.2. Dynamic
+  // rows appeared (one ssh per live connection), and `address` became
+  // `available-from`.
+  const SERVICE_TERSE_724 = [
+    ' 0  X  name=ftp port=21 proto=tcp available-from= vrf=main max-sessions=20',
+    ' 1     name=ssh port=22 proto=tcp available-from= vrf=main max-sessions=20',
+    ' 2 D c name=ssh port=22 proto=tcp local=192.168.80.1 remote=192.168.80.199:55758',
+    ' 3     name=telnet port=23 proto=tcp available-from= vrf=main max-sessions=20',
+    ' 4 D   name=resolver port=53 proto=tcp',
+    ' 6 D   name=dhcp port=67 proto=udp',
+    ' 8     name=www port=80 proto=tcp available-from= vrf=main max-sessions=20',
+    ' 9  X  name=www-ssl port=443 proto=tcp available-from= certificate=none tls-version=any vrf=main max-sessions=20',
+    '11 D   name=discover port=5678 proto=udp',
+    '12     name=winbox port=8291 proto=tcp available-from= vrf=main max-sessions=20',
+    '13     name=api port=8728 proto=tcp available-from= vrf=main max-sessions=20',
+    '14     name=api-ssl port=8729 proto=tcp available-from= certificate=none tls-version=any vrf=main max-sessions=20'
+  ].join('\n');
+
   // Real /ip address output. ether1 is on 192.168.4.0/22 - a PRIVATE WAN behind
   // someone else's router - and lte1 holds a public /32.
   const ADDRESS_TERSE = [
@@ -1560,14 +1578,24 @@ test('omitting mssClamp is valid and leaves it on', () => {
           // where an allow entry cannot be proven safe.
           return opts.wanAddresses !== undefined ? opts.wanAddresses : ADDRESS_TERSE;
         }
-        if (/^\/ip service print terse/.test(cmd)) return SERVICE_TERSE;
+        if (/^\/ip service print terse/.test(cmd)) return opts.v724 ? SERVICE_TERSE_724 : SERVICE_TERSE;
+        // The two syntax probes. A 7.18 build rejects both.
+        if (/^:put \[:len \[\/ip service find dynamic=no\]\]$/.test(cmd)) {
+          if (!opts.v724) throw new Error('expected end of command (line 1 column 26)');
+          return '9\n';
+        }
+        if (/ available-from\]$/.test(cmd) && !opts.v724) throw new Error('no such property');
+        // On 7.24, a find WITHOUT dynamic=no also matches the live ssh row.
+        if (opts.v724 && /\[find name="ssh"\]/.test(cmd)) {
+          throw new Error('invalid internal item number (/ip/service/get; line 1)');
+        }
         if (/^\/user active print terse/.test(cmd)) {
           if (opts.sessionsThrow) throw new Error('timeout');
           return opts.sessions !== undefined ? opts.sessions
             : '0 when=2026-08-27 19:44:13 name=admin address=192.168.80.199 via=ssh group=full';
         }
 
-        let m = /^\/ip service set \[find name="([^"]+)"\] address="([^"]*)"$/.exec(cmd);
+        let m = /^\/ip service set \[find name="([^"]+)"(?: dynamic=no)?\] (?:address|available-from)="([^"]*)"$/.exec(cmd);
         if (m) {
           // RouterOS refuses a value with any host bit set. Model that, or the
           // fake would accept a command the device rejects.
@@ -1580,12 +1608,15 @@ test('omitting mssClamp is valid and leaves it on', () => {
           address.set(m[1], opts.corrupt && m[2] ? opts.corrupt(m[1], m[2]) : m[2]);
           return '';
         }
-        m = /^\/ip service set \[find name="([^"]+)"\] disabled=yes$/.exec(cmd);
+        m = /^\/ip service set \[find name="([^"]+)"(?: dynamic=no)?\] disabled=yes$/.exec(cmd);
         if (m) { disabled.set(m[1], true); return ''; }
 
-        m = /^:put \[\/ip service get \[find name="([^"]+)"\] address\]$/.exec(cmd);
+        // 7.24 still answers `get address`, with an empty string. Model it.
+        m = /^:put \[\/ip service get \[find name="([^"]+)"(?: dynamic=no)?\] address\]$/.exec(cmd);
+        if (m) return opts.v724 ? '\n' : `${(address.get(m[1]) || '').split(',').join(';')}\n`;
+        m = /^:put \[\/ip service get \[find name="([^"]+)"(?: dynamic=no)?\] available-from\]$/.exec(cmd);
         if (m) return `${(address.get(m[1]) || '').split(',').join(';')}\n`;
-        m = /^:put \[\/ip service get \[find name="([^"]+)"\] disabled\]$/.exec(cmd);
+        m = /^:put \[\/ip service get \[find name="([^"]+)"(?: dynamic=no)?\] disabled\]$/.exec(cmd);
         if (m) return `${disabled.get(m[1]) ? 'true' : 'false'}\n`;
 
         if (/^\/tool mac-server mac-winbox set /.test(cmd)) { l2.winbox = /=(\S+)$/.exec(cmd)[1]; return ''; }
@@ -1611,6 +1642,23 @@ test('omitting mssClamp is valid and leaves it on', () => {
       assert.strictEqual(boundDev.address.get(name), '192.168.80.0/24', `${name} was left unrestricted`);
     }
   });
+  const dev724 = mgmtDevice({ v724: true });
+  const problems724 = await configureManagementServices(dev724, LAN, MGMT_WANS, true);
+  test('RouterOS 7.24: the restriction lands and reads back through available-from', () => {
+    // On 7.24 the old commands fail outright (two ssh rows) or read back empty
+    // (`get address`), so this run only passes if both new forms are used.
+    assert.deepStrictEqual(problems724, [], problems724.join('; '));
+    for (const name of SERVICE_NAMES) {
+      assert.strictEqual(dev724.address.get(name), '192.168.80.0/24', `${name} was left unrestricted`);
+    }
+    assert.ok(setsOf(dev724).every(c => / dynamic=no\] /.test(c)), 'every set excludes dynamic rows');
+  });
+  test('RouterOS 7.24: dynamic services are never touched', () => {
+    for (const name of ['resolver', 'dhcp', 'discover']) {
+      assert.ok(!dev724.sent.some(c => c.includes(`name="${name}"`)), `${name} was addressed`);
+    }
+  });
+
   test('a DISABLED service is bound too, so re-enabling it cannot reopen the WAN', () => {
     // www-ssl ships disabled. Binding only what is enabled would leave a
     // one-command path back to an exposed management plane.
@@ -1960,6 +2008,16 @@ test('omitting mssClamp is valid and leaves it on', () => {
     '1 X name=ftp port=21 address=192.168.80.0/24 vrf=main',
     '3   name=ssh port=22 address=192.168.80.0/24,10.7.0.0/16 vrf=main'
   ].join('\n')));
+  const restricted724 = await backupRouterConfig(backupDevice([
+    ' 0  X  name=ftp port=21 proto=tcp available-from=192.168.80.0/24 vrf=main max-sessions=20',
+    ' 1     name=ssh port=22 proto=tcp available-from=192.168.80.0/24,10.7.0.0/16 vrf=main max-sessions=20',
+    ' 2 D c name=ssh port=22 proto=tcp local=192.168.80.1 remote=192.168.80.196:55718',
+    ' 3  X  name=telnet port=23 proto=tcp available-from=192.168.80.0/24 vrf=main max-sessions=20'
+  ].join('\n')));
+  test('RouterOS 7.24: backup reads available-from and ignores the live ssh row', () => {
+    assert.deepStrictEqual(restricted724.lan.management, { allow: ['10.7.0.0/16'] });
+  });
+
   test('an extra allow range round-trips out of the device', () => {
     assert.deepStrictEqual(restricted.lan.management, { allow: ['10.7.0.0/16'] });
   });
@@ -2163,6 +2221,198 @@ test('omitting mssClamp is valid and leaves it on', () => {
     assert.ok(ALREADY_DONE.some(p => 'failure: device already added as bridge port'.includes(p)),
       'the regression that broke 6.2.5 applies must stay fixed');
   });
+
+  console.log('\n=== WiFi uplink (station mode) ===');
+  {
+    const {
+      configureWanLinks, configureRouterWifi, resolveWifiWanInterfaces, configureLanBridge
+    } = require('../lib/router');
+    const { isStationRecord } = require('../lib/backup');
+
+    const wifiWan = { name: 'primary', type: 'wifi', band: '2.4GHz', ssid: 'Office on Main ', passphrase: 'Office77..', distance: 1 };
+    const base = { lan: { address: '192.168.80.1/24', ports: ['ether1', 'ether2'] } };
+
+    // A device that answers the few queries these paths make, as a Chateau
+    // LTE6 would, and records everything else.
+    const recorder = (board = 'D53G-5HacD2HnD&EG06-A') => {
+      const commands = [];
+      return {
+        commands,
+        async exec(cmd) {
+          commands.push(cmd);
+          if (/^\/system resource print/.test(cmd)) return `board-name: ${board}\n`;
+          if (/^\/system package print/.test(cmd)) return '0 name="wifi-qcom-ac" version="7.24.2"';
+          if (/^:put \[\/interface\/get/.test(cmd)) return 'true';
+          return '';
+        }
+      };
+    };
+
+    test('a wifi uplink validates by band, ssid and passphrase', () => {
+      const { errors } = validateRouterConfig({ ...base, wan: [wifiWan] });
+      assert.deepStrictEqual(errors, []);
+    });
+
+    test('a wifi uplink without band, ssid or passphrase is rejected', () => {
+      const { errors } = validateRouterConfig({ ...base, wan: [{ name: 'w', type: 'wifi' }] });
+      assert.ok(errors.some(e => /needs band/.test(e)));
+      assert.ok(errors.some(e => /no ssid/.test(e)));
+      assert.ok(errors.some(e => /no passphrase/.test(e)));
+    });
+
+    test('a wifi uplink names a band, not an interface', () => {
+      const { errors } = validateRouterConfig({ ...base, wan: [{ ...wifiWan, interface: 'wifi1' }] });
+      assert.ok(errors.some(e => /not an interface/.test(e)));
+    });
+
+    test('an UNKNOWN or short passphrase is rejected', () => {
+      assert.ok(validateRouterConfig({ ...base, wan: [{ ...wifiWan, passphrase: 'UNKNOWN' }] })
+        .errors.some(e => /UNKNOWN/.test(e)));
+      assert.ok(validateRouterConfig({ ...base, wan: [{ ...wifiWan, passphrase: 'short' }] })
+        .errors.some(e => /8 to 63/.test(e)));
+    });
+
+    test('two wifi uplinks on one radio are rejected', () => {
+      const { errors } = validateRouterConfig({
+        ...base,
+        wan: [wifiWan, { ...wifiWan, name: 'second', distance: 2 }]
+      });
+      assert.ok(errors.some(e => /one uplink per radio/.test(e)));
+    });
+
+    test('an SSID on the uplink radio is rejected', () => {
+      const { errors } = validateRouterConfig({
+        ...base, wan: [wifiWan],
+        ssids: [{ ssid: 'PartlyPrimary', passphrase: 'x'.repeat(10), bands: ['2.4GHz', '5GHz'] }]
+      });
+      assert.ok(errors.some(e => /PartlyPrimary.*uses 2\.4GHz.*uplink primary/.test(e)));
+    });
+
+    test('band settings on the uplink radio are rejected', () => {
+      const { errors } = validateRouterConfig({ ...base, wan: [wifiWan], wifi: { '2.4GHz': { channel: 6 } } });
+      assert.ok(errors.some(e => /wifi\.2\.4GHz/.test(e)));
+    });
+
+    test('wifi, ethernet and LTE uplinks together validate and stay distinct', () => {
+      const wan = [
+        wifiWan,
+        { name: 'wired', interface: 'ether1', type: 'dhcp', distance: 2 },
+        { name: 'backup', interface: 'lte1', type: 'lte', distance: 3 }
+      ];
+      const { errors } = validateRouterConfig({ ...base, lan: { ...base.lan, ports: ['ether2'] }, wan });
+      assert.deepStrictEqual(errors, []);
+      const norm = normalizeWans(wan);
+      assert.deepStrictEqual(norm.map(w => w.distance), [1, 2, 3]);
+      assert.strictEqual(new Set(norm.map(w => w.probe)).size, 3);
+      assert.strictEqual(norm[0].ssid, 'Office on Main ');
+      assert.strictEqual(norm[0].band, '2.4GHz');
+    });
+
+    test('the member comment round-trips type and band, never the secret', () => {
+      const [wan] = normalizeWans([wifiWan]);
+      const comment = wanMemberComment(wan);
+      assert.ok(!/Office77/.test(comment), 'passphrase must not be written to a comment');
+      const parsed = parseWanMemberComment(comment);
+      assert.strictEqual(parsed.type, 'wifi');
+      assert.strictEqual(parsed.band, '2.4GHz');
+    });
+
+    const layout = recorder();
+    const wans = normalizeWans([wifiWan, { name: 'backup', interface: 'lte1', type: 'lte', distance: 2 }]);
+    await resolveWifiWanInterfaces(layout, wans);
+    test('the band resolves to the radio that carries it', () => {
+      assert.strictEqual(wans[0].interface, 'wifi1');
+    });
+
+    const cap = recorder('cAP ax');
+    const capWans = normalizeWans([wifiWan]);
+    await resolveWifiWanInterfaces(cap, capWans);
+    test('on a swapped-radio board the band still finds the right radio', () => {
+      assert.strictEqual(capWans[0].interface, 'wifi2');
+    });
+
+    const links = recorder();
+    const linkProblems = await configureWanLinks(links, wans);
+    test('the station clears every AP setting that would break it', () => {
+      const set = links.commands.find(c => /^\/interface\/wifi set wifi1 /.test(c));
+      assert.ok(set, 'wifi1 was configured');
+      for (const part of ['configuration.mode=station', 'configuration.ssid="Office on Main "',
+        'security.passphrase="Office77.."', '!channel.frequency', '!datapath.bridge', 'disabled=no']) {
+        assert.ok(set.includes(part), `missing ${part}`);
+      }
+      assert.deepStrictEqual(linkProblems, []);
+    });
+    test('the station gets a DHCP client that leaves routes and DNS to us', () => {
+      assert.ok(links.commands.some(c =>
+        /^\/ip dhcp-client add interface=wifi1 add-default-route=no use-peer-dns=no/.test(c)));
+    });
+    test('a client this uplink left on another interface is removed', () => {
+      // The office router moved its primary uplink from ether1 to wifi1, and
+      // the ether1 client stayed behind on what is now a LAN port.
+      assert.ok(links.commands.some(c => c === '/ip dhcp-client remove [find comment="wan:primary"]'));
+    });
+
+    const failing = recorder();
+    const realExec = failing.exec;
+    failing.exec = async cmd => {
+      if (/mode=station/.test(cmd)) throw new Error('failure: invalid value');
+      return realExec(cmd);
+    };
+    const failProblems = await configureWanLinks(failing, normalizeWans([wifiWan]).map(w => ({ ...w, interface: 'wifi1' })));
+    test('a rejected station config fails the apply and adds no DHCP client', () => {
+      assert.strictEqual(failProblems.length, 1);
+      assert.ok(!failing.commands.some(c => /dhcp-client add/.test(c)));
+    });
+
+    const bridge = recorder();
+    await configureLanBridge(bridge, { ports: ['ether2'] }, wans);
+    test('the bridge stage does not try to remove a radio\'s dynamic port', () => {
+      assert.ok(!bridge.commands.some(c => /bridge port (print|remove).*wifi1/.test(c)));
+    });
+
+    const radios = recorder();
+    const wifiProblems = await configureRouterWifi(radios, {
+      wan: [wifiWan],
+      wifi: { country: 'United States', '5GHz': { channel: 36, width: '20mhz', txPower: 12 } },
+      ssids: [
+        { ssid: 'PartlyPrimary', passphrase: 'x'.repeat(10), bands: ['5GHz'] },
+        { ssid: 'PartlyWork', passphrase: 'y'.repeat(10), bands: ['5GHz'] }
+      ]
+    });
+    test('the AP stage never touches the uplink radio', () => {
+      const touched = radios.commands.filter(c => /^\/interface\/wifi set wifi1\b/.test(c));
+      assert.deepStrictEqual(touched, [], `wifi1 was changed: ${touched.join(' | ')}`);
+      assert.ok(radios.commands.some(c => /^\/interface\/wifi set wifi2 .*configuration.ssid="PartlyPrimary"/.test(c)));
+      assert.deepStrictEqual(wifiProblems, []);
+    });
+
+    test('backup recognises a station record and skips it as an SSID', () => {
+      assert.strictEqual(isStationRecord('0  MB  name="wifi1" configuration.ssid="Office on Main " .mode=station'), true);
+      assert.strictEqual(isStationRecord('1  MBR name="wifi2" configuration.ssid="PartlyPrimary"'), false);
+    });
+
+    // Router backup against captured-shape output for a wifi uplink.
+    const backupDevice = {
+      async exec(cmd) {
+        if (/nat print terse/.test(cmd)) return '0 chain=srcnat action=masquerade comment="router:masquerade"';
+        if (/interface list member print detail/.test(cmd)) {
+          return ' 0   ;;; wan:primary type=wifi distance=1 probe=8.8.8.8 band=2.4GHz\n      list=WAN interface=wifi1\n';
+        }
+        if (/interface wifi print detail without-paging show-sensitive where name="wifi1"/.test(cmd)) {
+          return ' 0  MB  name="wifi1" configuration.ssid="Office on Main " .mode=station\n       security.passphrase="Office77.."\n';
+        }
+        return '';
+      }
+    };
+    const restored = await backupRouterConfig(backupDevice);
+    test('backup rebuilds a wifi uplink by band with its ssid and passphrase', () => {
+      const link = restored.wan.find(w => w.name === 'primary');
+      assert.deepStrictEqual(
+        { type: link.type, band: link.band, ssid: link.ssid, passphrase: link.passphrase, interface: link.interface },
+        { type: 'wifi', band: '2.4GHz', ssid: 'Office on Main ', passphrase: 'Office77..', interface: undefined }
+      );
+    });
+  }
 
   console.log('\n=== Host resolution (lockout guard) ===');
   const ip = await resolveHostAddress('192.168.80.1');

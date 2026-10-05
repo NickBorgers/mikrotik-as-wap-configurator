@@ -59,18 +59,26 @@ async function main() {
     console.log(`\n✓ Configuration backed up to: ${outputFile}`);
     console.log('\nConfiguration summary:');
 
-    // Format management interfaces for display
-    const mgmtDisplay = config.managementInterfaces.map(iface => {
-      if (typeof iface === 'string') {
-        return iface;
-      } else if (iface.bond) {
-        return `bond (${iface.bond.join('+')})`;
-      }
-      return 'unknown';
-    });
+    // A router backup has no management or disabled interfaces - those are
+    // WAP-only fields, removed when the router role is detected.
+    if (config.role === 'router') {
+      const uplinks = (config.wan || []).map(w => `${w.name} (${w.type === 'wifi' ? `${w.band} wifi` : w.interface})`);
+      console.log(`  Role: router, uplinks ${uplinks.join(', ') || 'none'}`);
+    } else {
+      // Format management interfaces for display
+      const mgmtDisplay = (config.managementInterfaces || []).map(iface => {
+        if (typeof iface === 'string') {
+          return iface;
+        } else if (iface.bond) {
+          return `bond (${iface.bond.join('+')})`;
+        }
+        return 'unknown';
+      });
 
-    console.log(`  Management interfaces: ${mgmtDisplay.join(', ')}`);
-    console.log(`  Disabled interfaces: ${config.disabledInterfaces.length > 0 ? config.disabledInterfaces.join(', ') : 'none'}`);
+      console.log(`  Management interfaces: ${mgmtDisplay.join(', ')}`);
+      const disabled = config.disabledInterfaces || [];
+      console.log(`  Disabled interfaces: ${disabled.length > 0 ? disabled.join(', ') : 'none'}`);
+    }
 
     if (config.wifi) {
       console.log(`  WiFi optimization: enabled`);

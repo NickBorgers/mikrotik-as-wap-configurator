@@ -1,5 +1,58 @@
 # Changelog
 
+## [6.3.0] - 2026-10-05 - WiFi Networks As Router Uplinks
+
+A `role: router` uplink can now be a WiFi network. `type: wifi` turns one radio
+into a station that joins the upstream network, gets a DHCP lease, and is
+routed, NATed and failed over like any other uplink. The other radio keeps
+serving your SSIDs.
+
+```yaml
+wan:
+  - name: primary
+    type: wifi
+    band: 2.4GHz
+    ssid: "Office on Main "
+    passphrase: secret-here
+    distance: 1
+  - name: backup
+    interface: lte1
+    type: lte
+    distance: 2
+```
+
+Ethernet, static, PPPoE and LTE uplinks are unchanged, and any mix of types
+works together.
+
+### What changed
+- New uplink type `wifi`, configured by `band` rather than `interface`. The
+  band is mapped to a radio on the device, so swapped-radio boards work.
+- The station clears every access-point setting the radio had: pinned channel,
+  width, TX power, bridge, VLAN and steering.
+- The apply waits up to 45s for the station to get a lease before it writes the
+  failover routes. On a timeout it prints the radio's monitor status.
+- The access-point stage never touches the uplink radio. Before this, a radio
+  with no SSIDs was disabled, which would have switched the uplink off.
+- Validation rejects an SSID or band settings on the uplink radio, two WiFi
+  uplinks on one radio, and an `UNKNOWN` passphrase.
+- Backup writes the uplink back as `type: wifi` with its band, SSID and
+  passphrase, and no longer lists a station as one of your SSIDs.
+
+### Fixes found while applying this on real hardware
+- **RouterOS 7.24: every router apply ended INCOMPLETE.** 7.24 changed
+  `/ip service` in two ways. It lists dynamic rows, including one extra `ssh`
+  row per live connection, so `[find name="ssh"]` matched two items and failed
+  with `invalid internal item number`. It also renamed `address` to
+  `available-from`, and `get ... address` now returns an empty string with no
+  error, which reads exactly like "unrestricted". The tool now probes which
+  form the device speaks and uses it for every service command. Dynamic rows
+  are skipped. Backup reads either name.
+- An uplink that moved to another interface left its old DHCP client behind.
+  The tool now also removes the client by the uplink's comment.
+- `backup-config.js` crashed after writing a router backup, because its
+  summary read the WAP-only `managementInterfaces` field. The file itself was
+  always written correctly.
+
 ## [6.2.6] - 2026-08-28 - Fix: 6.2.4 Broke Every Apply At The Bridge
 
 **6.2.5 and 6.2.4 cannot complete an apply.** Upgrade straight to 6.2.6.

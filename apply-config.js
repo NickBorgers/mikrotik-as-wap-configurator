@@ -137,7 +137,8 @@ async function main() {
     console.log(`LAN: ${config.lan?.address || 'unset'}`);
     (config.wan || []).forEach(wan => {
       const dist = wan.distance !== undefined ? wan.distance : '?';
-      console.log(`  - ${wan.name || wan.interface}: ${wan.interface} (${wan.type || 'dhcp'}), distance ${dist}`);
+      const where = wan.type === 'wifi' ? `${wan.band} radio, "${wan.ssid}"` : wan.interface;
+      console.log(`  - ${wan.name || wan.interface}: ${where} (${wan.type || 'dhcp'}), distance ${dist}`);
     });
     if (config.notify?.url) {
       console.log(`WAN change notifications: POST to ${config.notify.url} every ${config.notify.interval || '30s'}`);
