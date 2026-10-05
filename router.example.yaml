@@ -131,7 +131,7 @@ lan:
 wan:
   - name: primary
     interface: ether1
-    type: dhcp              # dhcp | static | pppoe | lte
+    type: dhcp              # dhcp | static | pppoe | lte | wifi
     distance: 1             # lower wins
     probe: 8.8.8.8
 
@@ -151,6 +151,17 @@ wan:
   #   type: static
   #   address: 203.0.113.10/30
   #   gateway: 203.0.113.9
+  #   distance: 1
+  #   probe: 9.9.9.9
+
+  # A WiFi uplink joins someone else's network with one radio, in station
+  # mode. Name the band, not the interface. Your own SSIDs must then use only
+  # the other band, and there must be no wifi.<band> block for this one.
+  # - name: building
+  #   type: wifi
+  #   band: 2.4GHz
+  #   ssid: "Building WiFi"
+  #   passphrase: their-passphrase
   #   distance: 1
   #   probe: 9.9.9.9
 

@@ -318,6 +318,23 @@ const BAND_TO_INTERFACE = {
 - Every uplink gets `use-peer-dns=no` and the router uses `lan.dns.servers`. Keeping ISP resolvers means that after failover, routing works but every lookup times out - which reads as a failed failover and is very hard to diagnose.
 - Each uplink needs its OWN probe address. Two uplinks sharing one probe fight over the same probe route. Validation rejects this.
 
+**Router Role: WiFi Uplink (Added v6.3.0)**
+- `type: wifi` on a `wan:` entry turns one radio into a station that joins an upstream network. Fields: `band` (2.4GHz | 5GHz), `ssid`, `passphrase`. NO `interface` - validation rejects it.
+- `resolveWifiWanInterfaces()` maps band to radio with `detectRadioLayout()` (cAP boards swap them). It MUST run before `configureInterfaceLists()`, because everything after works on interface names.
+- `configureWifiStation()` clears every AP leftover with the unset form (`!channel.frequency !datapath.bridge ...`), verified accepted on RouterOS 7.24.2. A pinned `channel.frequency` would lock the station to one channel; a `datapath.bridge` would switch the upstream network onto the LAN.
+- `configureLanBridge()` skips wifi uplinks. Their bridge port is DYNAMIC (made by `datapath.bridge`) and cannot be removed; clearing `datapath.bridge` removes it.
+- `configureRouterWifi()` skips the uplink band in all three loops: band settings, SSIDs, and disable-unused-radio. The disable loop is the dangerous one - an uplink band has no SSIDs, so it would be switched off.
+- Validation rejects an SSID or a `wifi.<band>` block on the uplink band, two wifi uplinks on one band, and `passphrase: UNKNOWN`.
+- The member comment records `band=` but NEVER the ssid or passphrase (SSIDs can contain spaces; the comment parser splits on them). Backup reads both from the radio with `print detail show-sensitive` - RouterOS 7.24 hides the passphrase without it.
+- `lib/backup.js` `isStationRecord()` keeps a station out of `ssids:` and out of `wifi.<band>` settings.
+- `waitForWifiLeases()` polls up to 45s for `status=bound`. A timeout is a warning plus `/interface/wifi monitor` output, like an unplugged cable; a rejected station `set` is an unmet requirement.
+
+**RouterOS 7.24 Changed `/ip service` (fixed in 6.3.0)**
+- 7.24 lists DYNAMIC rows (`D` flag): one `ssh` row per live connection, plus resolver, dhcp, dhcpclient, discover. `[find name="ssh"]` matches two items and `get` fails with `invalid internal item number`.
+- 7.24 renamed `address` to `available-from`. `set address=` is still accepted as an alias, but `get ... address` returns EMPTY with no error. That reads as "unrestricted", so verification built on it is silently wrong.
+- `serviceSyntax()` probes `dynamic=no` and `available-from` separately and falls back to the old form when the device rejects them. Use `svc.find(name)` / `svc.prop` for every `/ip service` command. Never write `[find name=...]` for a service directly.
+- Name discovery and backup both skip dynamic rows (`terseRecordDynamic()`); backup reads `available-from` OR `address`.
+
 **Router Role: WAN Failover Notification (Added v6.2.0)**
 - Optional `notify` block on a `role: router` config. Installs a `wan-notify` script plus a scheduler of the same name, both commented `router:wan-notify`. Absent block = both removed, so deleting the block turns it off.
 - Shape: `notify: {url, title?, interval?, checkCertificate?}`. `url` is any http(s) POST target; `title` becomes an `X-Title:` header (ntfy renders it); `interval` defaults to `30s`; `checkCertificate` defaults to FALSE.
