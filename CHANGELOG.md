@@ -1,5 +1,16 @@
 # Changelog
 
+## [6.4.1] - 2026-11-06 - Fix: wan-guard Could Never Disable A Dead Uplink
+
+The guard counted enabled default routes with `find ... disabled=no`. On
+RouterOS 7.24 that filter matches nothing, even for an enabled route, so the
+count was always 0 and the guard treated every uplink as "the last enabled
+route". It logged a warning and never failed over, so a dead path (the case the
+guard exists for) stayed on the dead uplink. Only a link-down still failed over.
+The count now uses `!disabled`, and the removal path uses the `disabled` flag
+filter, instead of `disabled=yes`. Found on a live router; the JS model in the
+tests could not see it because it does not run RouterOS filter syntax.
+
 ## [6.4.0] - 2026-11-06 - Failover Hysteresis For Flapping Uplinks
 
 An uplink that loses one probe address in short bursts (100% loss for 1-4
