@@ -1,5 +1,40 @@
 # Changelog
 
+## [6.4.0] - 2026-11-06 - Failover Hysteresis For Flapping Uplinks
+
+An uplink that loses one probe address in short bursts (100% loss for 1-4
+minutes while other destinations stay clean) made `check-gateway=ping` flip the
+router between primary and backup and flood the failover notifier. Two optional
+settings fix that. Configs without them generate exactly what they did before.
+
+```yaml
+wan:
+  - {name: primary, type: wifi, band: 2.4GHz, ssid: "...", passphrase: "...", distance: 1,
+     probes: [8.8.8.8, 9.9.9.9]}
+failover:
+  checkInterval: 10s
+  failAfter: 2
+  recoverAfter: 15m
+```
+
+### What changed
+- New `probes: [a, b, ...]` per uplink; `probe: x` still works as a one-item
+  list, and setting both is rejected. Each probe gets its own pinned /32 route
+  (`wan:<name> probe`, `probe2`, `probe3`). Probes stay unique across uplinks.
+- New top-level `failover` block. When present the default routes drop
+  `check-gateway=ping` and a `wan-guard` script plus scheduler (tagged
+  `router:wan-guard`) enables or disables them: down after `failAfter` checks
+  in which every probe failed, up after every probe answered for `recoverAfter`.
+- With `failover` and only `probe` set, each uplink is topped up to two probes
+  from the default pool, skipping `lan.dns` servers.
+- The lowest-priority uplink is never guarded and the last enabled default
+  route is never disabled.
+- `wan-notify` is unchanged: a disabled route is inactive, so it reports the
+  backup as active.
+- Removing `failover` removes the script and scheduler, re-enables the default
+  routes and restores `check-gateway=ping`.
+- Backup reads several probe routes into `probes` and the guard into `failover`.
+
 ## [6.3.0] - 2026-10-05 - WiFi Networks As Router Uplinks
 
 A `role: router` uplink can now be a WiFi network. `type: wifi` turns one radio

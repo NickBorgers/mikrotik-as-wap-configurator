@@ -318,6 +318,15 @@ const BAND_TO_INTERFACE = {
 - Every uplink gets `use-peer-dns=no` and the router uses `lan.dns.servers`. Keeping ISP resolvers means that after failover, routing works but every lookup times out - which reads as a failed failover and is very hard to diagnose.
 - Each uplink needs its OWN probe address. Two uplinks sharing one probe fight over the same probe route. Validation rejects this.
 
+**Router Role: Failover Hysteresis (Added v6.4.0)**
+- `probes: [..]` per uplink (`probe: x` = one-item list; both set is an error) and an optional top-level `failover: {checkInterval, failAfter, recoverAfter}`. Absent block = exactly the old single-probe `check-gateway=ping` config.
+- Present block: default route keeps gateway = first probe (instant link-down detection) but has NO `check-gateway`. The `wan-guard` script (+ scheduler, both `router:wan-guard`) enables/disables each `wan:<name> default` route. Implemented in `lib/router.js` (`wanGuardScript`, `configureWanGuard`, `backupWanGuard`, `failoverSettings`).
+- The route's `disabled` flag IS the up/down state. Only counters live in the script comment (`f<N>` fail count, `r<uptime>` recovery start), same reason as wan-notify (no `:global`). Re-apply re-adds routes enabled and resets the comment, so nothing can stay stuck DOWN.
+- Uptime, not the wall clock, is the timebase; a recovery start later than now means a reboot and is discarded.
+- The lowest-priority uplink gets no block. Before any disable the script counts enabled default routes and refuses to remove the last.
+- Probe route comments: `probe`, `probe2`, `probe3`; backup regex `probe(\d*)`. The member comment gains `probes=a,b` only when there are extras.
+- The RouterOS script cannot be executed by `npm test`; tests pin its text and run a JS model of the same rules (`guardStep` in test/router.test.js). Keep the two in step. NOT yet verified on hardware: `:totime` of a stored uptime, `/ping` return value, `else={` formatting.
+
 **Router Role: WiFi Uplink (Added v6.3.0)**
 - `type: wifi` on a `wan:` entry turns one radio into a station that joins an upstream network. Fields: `band` (2.4GHz | 5GHz), `ssid`, `passphrase`. NO `interface` - validation rejects it.
 - `resolveWifiWanInterfaces()` maps band to radio with `detectRadioLayout()` (cAP boards swap them). It MUST run before `configureInterfaceLists()`, because everything after works on interface names.

@@ -133,7 +133,7 @@ wan:
     interface: ether1
     type: dhcp              # dhcp | static | pppoe | lte | wifi
     distance: 1             # lower wins
-    probe: 8.8.8.8
+    probe: 8.8.8.8          # or several: probes: [8.8.8.8, 9.9.9.9] (not both)
 
   - name: backup
     interface: lte1
@@ -173,6 +173,28 @@ wan:
   #   password: secret
   #   distance: 3
   #   probe: 208.67.222.222
+
+# ---------------------------------------------------------------------------
+# Failover hysteresis (optional)
+# ---------------------------------------------------------------------------
+# Without this block, check-gateway=ping decides: two lost pings to the ONE
+# probe address mark an uplink down, and the first reply marks it up. An uplink
+# that loses a single address in bursts then flaps. With this block, give each
+# uplink several targets (`probes: [a, b]` in place of `probe: a`) and a
+# `wan-guard` script on the device decides instead:
+#
+#   - down after `failAfter` checks in a row where EVERY probe failed
+#   - up again only after EVERY probe answered, continuously, for `recoverAfter`
+#
+# failover:
+#   checkInterval: 10s    # how often probes are pinged (default 10s)
+#   failAfter: 2          # all-probes-failed checks before DOWN (default 2)
+#   recoverAfter: 15m     # clean time before the uplink returns (default 15m)
+#
+# With the block present and only `probe` set, each uplink gets a second probe
+# from the default pool automatically. Removing the block removes the script
+# and goes back to check-gateway=ping. Needs the scheduler (see device-mode
+# notes under `notify` below). The lowest-priority uplink is never disabled.
 
 # ---------------------------------------------------------------------------
 # WAN change notification (optional)
