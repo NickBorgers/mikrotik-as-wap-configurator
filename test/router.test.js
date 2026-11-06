@@ -566,6 +566,279 @@ test('notify must be a mapping', () => {
     .errors.some(x => /must be a mapping/.test(x)));
 });
 
+console.log('\n=== WAN health guard: probes and normalisation ===');
+const {
+  wanGuardScript, parseWanGuardScript, failoverSettings, wanOptions, timeLiteral,
+  configureFailoverRoutes, configureWanGuard, backupWanGuard
+} = require('../lib/router');
+
+const guardBase = {
+  lan: { address: '192.168.80.1/24', dns: { servers: ['9.9.9.9'] } },
+  wan: [
+    { name: 'primary', interface: 'ether1', distance: 1 },
+    { name: 'backup', interface: 'lte1', type: 'lte', distance: 2 }
+  ]
+};
+const guardWans = cfg => normalizeWans(cfg.wan, wanOptions(cfg));
+const noResolverBase = { ...guardBase, lan: { address: '192.168.80.1/24', dns: { servers: ['8.8.4.4'] } } };
+
+test('without a failover block every uplink keeps exactly one probe (unchanged behaviour)', () => {
+  const w = guardWans(guardBase);
+  assert.deepStrictEqual(w.map(x => x.probes), [['8.8.8.8'], ['1.1.1.1']]);
+  assert.deepStrictEqual(w.map(x => x.probe), ['8.8.8.8', '1.1.1.1']);
+});
+test('probe: x is a one-item probes list', () => {
+  const w = normalizeWans([{ name: 'a', interface: 'e1', probe: '4.4.4.4' }]);
+  assert.deepStrictEqual(w[0].probes, ['4.4.4.4']);
+  assert.strictEqual(w[0].probe, '4.4.4.4');
+});
+test('an explicit probes list is used as written, first one is the gateway probe', () => {
+  const w = normalizeWans([{ name: 'a', interface: 'e1', probes: ['4.4.4.4', '5.5.5.5', '6.6.6.6'] }], { failover: true });
+  assert.deepStrictEqual(w[0].probes, ['4.4.4.4', '5.5.5.5', '6.6.6.6']);
+  assert.strictEqual(w[0].probe, '4.4.4.4');
+});
+test('with failover, an uplink with one probe is topped up from the default pool', () => {
+  const w = guardWans({ ...noResolverBase, failover: {} });
+  assert.deepStrictEqual(w.map(x => x.probes), [['8.8.8.8', '9.9.9.9'], ['1.1.1.1', '208.67.222.222']]);
+});
+test('the top-up skips lan.dns resolvers and addresses another uplink uses', () => {
+  const cfg = { ...guardBase, lan: { ...guardBase.lan, dns: { servers: ['9.9.9.9'] } }, failover: {} };
+  const w = normalizeWans([
+    { name: 'primary', interface: 'e1', distance: 1, probe: '8.8.8.8' },
+    { name: 'backup', interface: 'e2', distance: 2, probe: '1.1.1.1' }
+  ], wanOptions(cfg));
+  assert.deepStrictEqual(w.map(x => x.probes), [['8.8.8.8', '208.67.222.222'], ['1.1.1.1']],
+    '9.9.9.9 is a resolver; the pool then runs dry, so backup keeps one probe');
+});
+test('the top-up never runs for an uplink that listed its own probes', () => {
+  const w = normalizeWans([{ name: 'a', interface: 'e1', probes: ['4.4.4.4'] }], { failover: true });
+  assert.deepStrictEqual(w[0].probes, ['4.4.4.4']);
+});
+
+console.log('\n=== WAN health guard: validation ===');
+const guardErrors = cfg => validateRouterConfig(cfg).errors;
+test('no failover block, no new errors or warnings', () => {
+  assert.deepStrictEqual(validateRouterConfig(guardBase), { errors: [], warnings: [] });
+});
+test('a failover block of {} is valid and uses the defaults', () => {
+  assert.deepStrictEqual(validateRouterConfig({ ...guardBase, failover: {} }).errors, []);
+  assert.deepStrictEqual(failoverSettings({}), { checkInterval: '10s', failAfter: 2, recoverAfter: '15m' });
+});
+test('probe and probes together are rejected', () => {
+  const e = guardErrors({ ...guardBase, wan: [{ name: 'a', interface: 'e1', probe: '4.4.4.4', probes: ['5.5.5.5'] }] });
+  assert.ok(e.some(x => /both probe and probes/.test(x)), e.join('; '));
+});
+test('probes entries must be IPv4, unique within the list, and the list non-empty', () => {
+  assert.ok(guardErrors({ ...guardBase, wan: [{ name: 'a', interface: 'e1', probes: ['4.4.4.4', 'nope'] }] })
+    .some(x => /probes entry 'nope'/.test(x)));
+  assert.ok(guardErrors({ ...guardBase, wan: [{ name: 'a', interface: 'e1', probes: ['4.4.4.4', '4.4.4.4'] }] })
+    .some(x => /lists probe 4.4.4.4 twice/.test(x)));
+  assert.ok(guardErrors({ ...guardBase, wan: [{ name: 'a', interface: 'e1', probes: [] }] })
+    .some(x => /non-empty list/.test(x)));
+});
+test('a probe shared by two uplinks is rejected, wherever it sits in the list', () => {
+  const e = guardErrors({ ...guardBase, wan: [
+    { name: 'a', interface: 'e1', distance: 1, probes: ['4.4.4.4', '5.5.5.5'] },
+    { name: 'b', interface: 'e2', distance: 2, probes: ['6.6.6.6', '5.5.5.5'] }
+  ] });
+  assert.ok(e.some(x => /b and a both probe 5.5.5.5/.test(x)), e.join('; '));
+});
+test('failover values are checked with clear errors', () => {
+  const bad = failover => guardErrors({ ...guardBase, failover });
+  assert.ok(bad({ checkInterval: 'often' }).some(x => /failover.checkInterval 'often' must look like/.test(x)));
+  assert.ok(bad({ checkInterval: '0' }).some(x => /cannot be zero/.test(x)));
+  assert.ok(bad({ recoverAfter: '15 minutes' }).some(x => /failover.recoverAfter/.test(x)));
+  assert.ok(bad({ failAfter: 0 }).some(x => /failAfter.*whole number from 1 to 100/.test(x)));
+  assert.ok(bad({ failAfter: 2.5 }).some(x => /failAfter/.test(x)));
+  assert.ok(bad({ failAfter: '2' }).some(x => /failAfter/.test(x)));
+  assert.ok(bad({ checkInterval: '1m', recoverAfter: '30s' }).some(x => /recoverAfter cannot be shorter/.test(x)));
+  assert.ok(bad({ colour: 'red' }).some(x => /failover.colour is not a known setting/.test(x)));
+  assert.ok(bad('yes').some(x => /failover must be a mapping/.test(x)));
+  assert.ok(bad(null).some(x => /failover must be a mapping/.test(x)));
+});
+test('a very short checkInterval warns, a single uplink warns', () => {
+  assert.ok(validateRouterConfig({ ...guardBase, failover: { checkInterval: '2s' } })
+    .warnings.some(x => /checkInterval of 2s/.test(x)));
+  assert.ok(validateRouterConfig({ ...guardBase, wan: [guardBase.wan[0]], failover: {} })
+    .warnings.some(x => /single uplink/.test(x)));
+});
+test('default extra probes colliding with a resolver do not break a failover config', () => {
+  const cfg = { ...guardBase, lan: { ...guardBase.lan, dns: { servers: ['9.9.9.9', '8.8.4.4'] } }, failover: {} };
+  assert.deepStrictEqual(validateRouterConfig(cfg).errors, []);
+});
+
+console.log('\n=== WAN health guard: generated script ===');
+const guardCfg = { ...noResolverBase, failover: {} };
+const guardW = guardWans(guardCfg);
+const guardSettings = failoverSettings({});
+const guardSrc = wanGuardScript(guardW, guardSettings);
+
+test('the script is tagged, carries the overwrite warning and its settings line', () => {
+  assert.ok(guardSrc.startsWith('# router:wan-guard - written by mikrotik-as-wap-configurator, edits are overwritten'));
+  assert.deepStrictEqual(parseWanGuardScript(guardSrc), { checkInterval: '10s', failAfter: 2, recoverAfter: '15m' });
+});
+test('state lives in the script comment, never in a :global', () => {
+  assert.ok(!/:global/.test(guardSrc));
+  assert.ok(guardSrc.includes('/system script get $id comment'));
+  assert.ok(guardSrc.includes('/system script set $id comment=$want'));
+  assert.ok(/:if \(\$have != \$want\)/.test(guardSrc), 'written only on a change');
+});
+test('time is uptime, and recoverAfter is a time literal', () => {
+  assert.ok(guardSrc.includes(':local now [/system resource get uptime]'));
+  assert.ok(guardSrc.includes(':local recoverAfter 00:15:00'));
+  assert.strictEqual(timeLiteral(90061), '1d01:01:01');
+});
+test('every probe of the uplink is pinged', () => {
+  assert.ok(guardSrc.includes(':foreach a in={8.8.8.8;9.9.9.9} do='));
+  assert.ok(guardSrc.includes(':foreach a in={1.1.1.1;208.67.222.222}') === false,
+    'the lowest-priority uplink is not guarded, so its probes are not checked');
+  assert.ok(/\/ping address=\$a count=2 interval=500ms/.test(guardSrc));
+});
+test('all-fail threshold: only a check with zero replies counts, at failAfter in a row', () => {
+  assert.ok(guardSrc.includes(':if ($ok > 0) do={ :set s1 "-" }'), 'any reply resets the counter');
+  assert.ok(guardSrc.includes(':set f ($f + 1)'));
+  assert.ok(guardSrc.includes(':if ($f >= $failAfter)'));
+  assert.ok(guardSrc.includes('/ip route disable $rid'));
+});
+test('recovery needs EVERY probe, and any other result restarts the clock', () => {
+  assert.ok(guardSrc.includes(':if ($all = 1) do={'));
+  assert.ok(guardSrc.includes('(($now - $t) >= $recoverAfter)'));
+  assert.ok(guardSrc.includes('/ip route enable $rid'));
+  // The else branch of ($all = 1) clears the pending "r<time>" state.
+  assert.ok(/recovery clock reset[^\n]*\n\s+:set s1 "-"/.test(guardSrc));
+  assert.ok(guardSrc.includes('($t <= $now)'), 'a start time from before a reboot is discarded');
+});
+test('the lowest-priority uplink is never guarded, and the last enabled route is never disabled', () => {
+  assert.ok(!guardSrc.includes('# backup:'), 'no block for the lowest-priority uplink');
+  assert.ok(guardSrc.includes('[/ip route find comment="wan:backup default" disabled=no]'), 'it still counts as enabled');
+  assert.ok(/disabled=no\]\]\) > 1\) do=\{\n\s+\/ip route disable/.test(guardSrc), 'disable only if more than one is enabled');
+  assert.ok(guardSrc.includes('failing but is the last enabled default route, leaving it on'));
+});
+test('three uplinks: the two best are guarded, the third is not', () => {
+  const three = normalizeWans([
+    { name: 'a', interface: 'e1', distance: 1 }, { name: 'b', interface: 'e2', distance: 2 },
+    { name: 'c', interface: 'e3', distance: 3 }
+  ], { failover: true });
+  const src = wanGuardScript(three, guardSettings);
+  assert.ok(src.includes('# a:') && src.includes('# b:') && !src.includes('# c:'));
+  assert.ok(src.includes('" a=" . $s1 . " b=" . $s2'));
+});
+test('every transition is logged with the wan-guard: prefix', () => {
+  for (const what of ['UP after', 'DOWN, all probes failed', 'recovery clock reset', 'check failed, state unchanged']) {
+    assert.ok(new RegExp(`:log (info|warning) \\(?"wan-guard: primary ${what}`).test(guardSrc), what);
+  }
+});
+test('the check is wrapped so an error leaves the state alone', () => {
+  assert.ok(/\} on-error=\{ :log warning "wan-guard: primary check failed, state unchanged" \}/.test(guardSrc));
+});
+test('a single-uplink guard script has no per-uplink blocks', () => {
+  const one = wanGuardScript(normalizeWans([{ name: 'a', interface: 'e1' }], { failover: true }), guardSettings);
+  assert.ok(!one.includes(':foreach'));
+  assert.ok(one.includes(':local want ("router:wan-guard")'));
+});
+test('settings flow into the script and survive a round trip', () => {
+  const custom = failoverSettings({ checkInterval: '5s', failAfter: 3, recoverAfter: '1h' });
+  const src = wanGuardScript(guardW, custom);
+  assert.ok(src.includes(':local failAfter 3') && src.includes(':local recoverAfter 01:00:00'));
+  assert.deepStrictEqual(parseWanGuardScript(src), { checkInterval: '5s', failAfter: 3, recoverAfter: '1h' });
+});
+
+console.log('\n=== WAN health guard: behaviour model ===');
+/**
+ * JS mirror of one uplink's block in the generated script, so the decision
+ * rules can be exercised without a RouterOS interpreter. The text assertions
+ * above pin each branch of the real script to this.
+ *   state: "-" | "f<N>" | "r<seconds>"; down is the route's disabled flag.
+ */
+function guardStep({ down, state, replies, probes, now, failAfter = 2, recoverAfter = 900, enabled = 2 }) {
+  const all = replies === probes;
+  if (down) {
+    if (!all) return { down, state: '-', event: state[0] === 'r' ? 'clock-reset' : null };
+    let start = state[0] === 'r' ? Number(state.slice(1)) : null;
+    if (start !== null && start > now) start = null; // from before a reboot
+    if (start === null) return { down, state: `r${now}`, event: null };
+    if (now - start >= recoverAfter) return { down: false, state: '-', event: 'up' };
+    return { down, state, event: null };
+  }
+  if (replies > 0) return { down, state: '-', event: null };
+  const prev = state[0] === 'f' ? Number(state.slice(1)) : 0;
+  let f = prev + 1;
+  if (f >= failAfter) {
+    if (enabled > 1) return { down: true, state: '-', event: 'down' };
+    return { down, state: `f${failAfter}`, event: prev < failAfter ? 'warn-last-route' : null };
+  }
+  return { down, state: `f${f}`, event: null };
+}
+const run = (steps, init = { down: false, state: '-' }, extra = {}) => {
+  let cur = init; const events = [];
+  for (const [i, replies] of steps.entries()) {
+    cur = guardStep({ ...cur, replies, probes: 2, now: i * 10, ...extra });
+    if (cur.event) events.push(cur.event);
+  }
+  return { cur, events };
+};
+test('model: one dead probe address never fails the uplink', () => {
+  assert.deepStrictEqual(run([1, 1, 1, 1, 1, 1]).events, []);
+});
+test('model: a single all-fail check is forgiven, two in a row take it down', () => {
+  assert.deepStrictEqual(run([0, 2]).events, []);
+  const r = run([0, 0]);
+  assert.deepStrictEqual(r.events, ['down']);
+  assert.strictEqual(r.cur.down, true);
+});
+test('model: a partial check between failures resets the counter', () => {
+  assert.deepStrictEqual(run([0, 1, 0, 1, 0]).events, []);
+});
+test('model: recovery needs every probe for the whole period', () => {
+  const steps = Array(91).fill(2); // 90 intervals of 10s = 15 minutes after the first success
+  const r = run(steps, { down: true, state: '-' });
+  assert.deepStrictEqual(r.events, ['up']);
+  assert.strictEqual(r.cur.down, false);
+  assert.deepStrictEqual(run(Array(90).fill(2), { down: true, state: '-' }).events, [], 'one tick short');
+});
+test('model: a partial or failed check restarts the recovery clock', () => {
+  const r = run([...Array(80).fill(2), 1, ...Array(80).fill(2)], { down: true, state: '-' });
+  assert.deepStrictEqual(r.events, ['clock-reset'], 'never reaches 15 minutes in either run');
+  assert.strictEqual(r.cur.down, true);
+  assert.deepStrictEqual(run([...Array(80).fill(2), 0, ...Array(80).fill(2)], { down: true, state: '-' }).events, ['clock-reset']);
+});
+test('model: a recovery start from before a reboot is discarded, not trusted', () => {
+  const r = guardStep({ down: true, state: 'r5000', replies: 2, probes: 2, now: 40 });
+  assert.strictEqual(r.state, 'r40');
+  assert.strictEqual(r.down, true);
+});
+test('model: the last enabled default route is never disabled', () => {
+  const r = run([0, 0, 0, 0], { down: false, state: '-' }, { enabled: 1 });
+  assert.strictEqual(r.cur.down, false);
+  assert.deepStrictEqual(r.events, ['warn-last-route'], 'warns once, not every tick');
+});
+test('model: an enabled route is UP until checks say otherwise (reboot, re-apply)', () => {
+  assert.strictEqual(guardStep({ down: false, state: '-', replies: 2, probes: 2, now: 0 }).down, false);
+});
+
+console.log('\n=== WAN health guard and the notifier ===');
+test('wan-notify still reads the active uplink off the routes the guard toggles', () => {
+  // The notifier asks for comment="wan:<name> default" active=yes, and the guard
+  // disables exactly that route. A disabled route is never active.
+  const notifySrc = wanNotifyScript(guardW, { url: 'https://x.example/y', label: 'r' });
+  for (const w of guardW) {
+    assert.ok(notifySrc.includes(`comment="wan:${w.name} default" active=yes`));
+    assert.ok(guardSrc.includes(`comment="wan:${w.name} default"`));
+  }
+});
+test('notify logic gives primary, backup or none as the guard flips routes', () => {
+  // Mirror of the notifier: worst first, last assignment wins, "none" default.
+  const active = routes => {
+    let cur = 'none';
+    for (const w of [...guardW].reverse()) if (routes[w.name]) cur = w.name;
+    return cur;
+  };
+  assert.strictEqual(active({ primary: true, backup: true }), 'primary');
+  assert.strictEqual(active({ primary: false, backup: true }), 'backup', 'guard disabled primary');
+  assert.strictEqual(active({ primary: true, backup: false }), 'primary');
+  assert.strictEqual(active({ primary: false, backup: false }), 'none');
+});
+
 console.log('\n=== WAN failover notification: apply behaviour ===');
 const { configureWanNotify } = require('../lib/router');
 
@@ -594,8 +867,12 @@ function fakeDevice({ deviceMode = 'mode: home\r\nscheduler: yes\r\nfetch: yes\r
       m = cmd.match(/^\/system (script|scheduler) print terse where name="([^"]+)"/);
       if (m) return terse(listFor(m[1]).filter(o => o.name === m[2]));
 
-      m = cmd.match(/^\/system (script|scheduler) print terse where comment="([^"]+)"/);
-      if (m) return terse(listFor(m[1]).filter(o => (o.comment || '') === m[2]));
+      m = cmd.match(/^\/system (script|scheduler) print terse where comment(~|=)"([^"]+)"/);
+      if (m) {
+        return terse(listFor(m[1]).filter(o => (m[2] === '~'
+          ? new RegExp(m[3]).test(o.comment || '')
+          : (o.comment || '') === m[3])));
+      }
 
       m = cmd.match(/^\/system (script|scheduler) remove \[find comment(~|=)"([^"]+)"\]/);
       if (m) {
@@ -761,6 +1038,197 @@ test('omitting mssClamp is valid and leaves it on', () => {
     assert.strictEqual(badProblems.length, 1);
     assert.ok(/notify.url/.test(badProblems[0]));
     assert.ok(!rejected.commands.some(c => /remove|add/.test(c)), 'nothing was removed or added');
+  });
+
+  console.log('\n=== WAN health guard: apply behaviour ===');
+
+  const guardRoutesFor = async (cfg) => {
+    const wansForApply = normalizeWans(cfg.wan.map(w => ({ ...w })), wanOptions(cfg));
+    const rec = { commands: [], async exec(cmd) { this.commands.push(cmd); return ''; } };
+    await configureFailoverRoutes(rec, wansForApply, { guarded: cfg.failover !== undefined });
+    return rec.commands;
+  };
+  const staticWans = [
+    { name: 'primary', interface: 'ether1', type: 'static', address: '192.168.1.2/24', gateway: '192.168.1.1', distance: 1 },
+    { name: 'backup', interface: 'lte1', type: 'lte', distance: 2 }
+  ];
+
+  const plainRoutes = await guardRoutesFor({ wan: staticWans });
+  test('without failover the routes are exactly today\'s: one probe, check-gateway=ping', () => {
+    assert.deepStrictEqual(plainRoutes.filter(c => /route add/.test(c)), [
+      '/ip route add dst-address=8.8.8.8/32 gateway=192.168.1.1 scope=10 comment="wan:primary probe"',
+      '/ip route add dst-address=0.0.0.0/0 gateway=8.8.8.8 target-scope=11 distance=1 check-gateway=ping comment="wan:primary default"',
+      '/ip route add dst-address=1.1.1.1/32 gateway=lte1 scope=10 comment="wan:backup probe"',
+      '/ip route add dst-address=0.0.0.0/0 gateway=1.1.1.1 target-scope=11 distance=2 check-gateway=ping comment="wan:backup default"'
+    ]);
+  });
+
+  const guardedCfg = { wan: staticWans, failover: {} };
+  const guardedRoutes = await guardRoutesFor(guardedCfg);
+  test('with failover: a pinned route per probe, recursive gateway = first probe, no check-gateway', () => {
+    assert.deepStrictEqual(guardedRoutes.filter(c => /route add/.test(c)), [
+      '/ip route add dst-address=8.8.8.8/32 gateway=192.168.1.1 scope=10 comment="wan:primary probe"',
+      '/ip route add dst-address=9.9.9.9/32 gateway=192.168.1.1 scope=10 comment="wan:primary probe2"',
+      '/ip route add dst-address=0.0.0.0/0 gateway=8.8.8.8 target-scope=11 distance=1 comment="wan:primary default"',
+      '/ip route add dst-address=1.1.1.1/32 gateway=lte1 scope=10 comment="wan:backup probe"',
+      '/ip route add dst-address=208.67.222.222/32 gateway=lte1 scope=10 comment="wan:backup probe2"',
+      '/ip route add dst-address=0.0.0.0/0 gateway=1.1.1.1 target-scope=11 distance=2 comment="wan:backup default"'
+    ]);
+    assert.ok(!guardedRoutes.some(c => /check-gateway/.test(c)));
+  });
+  const guardedRoutesAgain = await guardRoutesFor(guardedCfg);
+  const routesAfterRemoval = await guardRoutesFor({ wan: staticWans });
+  test('re-applying the routes writes the identical commands, and clears the uplink\'s old ones first', () => {
+    assert.deepStrictEqual(guardedRoutesAgain, guardedRoutes);
+    assert.ok(guardedRoutes.includes('/ip route remove [find comment~"^wan:primary "]'),
+      'matches probe2 and any further extras too');
+  });
+  test('removing failover goes back to the plain commands (check-gateway=ping)', () => {
+    assert.deepStrictEqual(routesAfterRemoval, plainRoutes);
+  });
+
+  const guardWansApplied = normalizeWans(staticWans.map(w => ({ ...w })), wanOptions(guardedCfg));
+  const guardCfgFull = { host: 'gw.example.net', failover: { checkInterval: '10s', failAfter: 2, recoverAfter: '15m' } };
+  const guardDev = fakeDevice();
+  const guardProblems = await configureWanGuard(guardDev, guardCfgFull, guardWansApplied);
+  test('a healthy device gets one wan-guard script and one scheduler, owned by comment', () => {
+    assert.deepStrictEqual(guardProblems, []);
+    assert.strictEqual(guardDev.scripts.length, 1);
+    assert.strictEqual(guardDev.schedulers.length, 1);
+    assert.strictEqual(guardDev.scripts[0].name, 'wan-guard');
+    assert.strictEqual(guardDev.scripts[0].comment, 'router:wan-guard');
+    assert.strictEqual(guardDev.schedulers[0].comment, 'router:wan-guard');
+    assert.ok(/interval=10s/.test(guardDev.schedulers[0].command));
+    assert.ok(guardDev.schedulers[0].command.includes('/system/script/run wan-guard'));
+    assert.ok(/policy=read,write,test/.test(guardDev.scripts[0].command));
+  });
+  test('the script goes on the wire as one line', () => {
+    assert.ok(!/\r|\n/.test(guardDev.scripts[0].command));
+    assert.ok(guardDev.scripts[0].command.includes('\\n:local failAfter 2\\n'));
+    assert.ok(guardDev.scripts[0].command.includes('\\$ok'), 'dollar signs are escaped for the wire');
+  });
+
+  const guardAgain = fakeDevice({
+    scripts: [{ name: 'wan-guard', comment: 'router:wan-guard primary=f1' }],
+    schedulers: [{ name: 'wan-guard', comment: 'router:wan-guard' }]
+  });
+  await configureWanGuard(guardAgain, guardCfgFull, guardWansApplied);
+  test('re-applying replaces the guard rather than duplicating it, and resets stale counters', () => {
+    assert.strictEqual(guardAgain.scripts.length, 1);
+    assert.strictEqual(guardAgain.schedulers.length, 1);
+    assert.strictEqual(guardAgain.scripts[0].comment, 'router:wan-guard');
+    assert.strictEqual(guardAgain.scripts[0].command, guardDev.scripts[0].command, 'same input, same script');
+  });
+
+  const guardGone = fakeDevice({
+    scripts: [{ name: 'wan-guard', comment: 'router:wan-guard primary=-' }],
+    schedulers: [{ name: 'wan-guard', comment: 'router:wan-guard' }]
+  });
+  const goneProblems = await configureWanGuard(guardGone, { host: 'gw.example.net' }, guardWansApplied);
+  test('deleting the failover block removes the guard, re-enables the routes and restores check-gateway=ping', () => {
+    assert.deepStrictEqual(goneProblems, []);
+    assert.strictEqual(guardGone.scripts.length, 0);
+    assert.strictEqual(guardGone.schedulers.length, 0);
+    assert.ok(guardGone.commands.includes('/ip route enable [find comment~"^wan:.* default" disabled=yes]'));
+    assert.ok(guardGone.commands.includes('/ip route set [find comment~"^wan:.* default"] check-gateway=ping'));
+  });
+  const neverHad = fakeDevice();
+  await configureWanGuard(neverHad, { host: 'gw.example.net' }, guardWansApplied);
+  test('with no failover block and no guard on the device, nothing at all is sent that touches routes', () => {
+    assert.ok(!neverHad.commands.some(c => /ip route/.test(c)));
+    assert.ok(!neverHad.commands.some(c => / add /.test(c)));
+  });
+
+  const guardLocked = fakeDevice({ deviceMode: 'mode: home\r\nscheduler: no\r\nfetch: no\r\n' });
+  const guardLockedProblems = await configureWanGuard(guardLocked, guardCfgFull, guardWansApplied);
+  test('device-mode blocking the scheduler is reported, and nothing is installed', () => {
+    assert.strictEqual(guardLockedProblems.length, 1);
+    assert.ok(/device-mode blocks the scheduler/.test(guardLockedProblems[0]));
+    assert.strictEqual(guardLocked.scripts.length, 0);
+  });
+  const guardClash = fakeDevice({ scripts: [{ name: 'wan-guard', comment: 'mine' }] });
+  const guardClashProblems = await configureWanGuard(guardClash, guardCfgFull, guardWansApplied);
+  test('a wan-guard object this tool does not own is left alone', () => {
+    assert.strictEqual(guardClashProblems.length, 1);
+    assert.strictEqual(guardClash.scripts[0].comment, 'mine');
+    assert.strictEqual(guardClash.schedulers.length, 0);
+  });
+  const guardBadDev = fakeDevice();
+  const guardBadProblems = await configureWanGuard(guardBadDev, { failover: { failAfter: 0 } }, guardWansApplied);
+  test('an invalid value that skipped validation stops before the device is touched', () => {
+    assert.strictEqual(guardBadProblems.length, 1);
+    assert.ok(/failAfter/.test(guardBadProblems[0]));
+    assert.ok(!guardBadDev.commands.some(c => /remove|add/.test(c)));
+  });
+
+  console.log('\n=== WAN health guard: backup round trip ===');
+  // Turn the commands the apply sent into the detail output a device prints.
+  const routeDetail = guardedRoutes.filter(c => /route add/.test(c)).map((c, i) => {
+    const comment = c.match(/comment="([^"]+)"/)[1];
+    const flags = comment.endsWith('default') ? (comment.includes('primary') ? 'A S' : '  S') : 'A S';
+    return ` ${i} ${flags}  ;;; ${comment}\n      ${c.replace(/^\/ip route add /, '').replace(/ comment="[^"]+"/, '')}\n`;
+  }).join('');
+  const roundTrip = {
+    async exec(cmd) {
+      if (/nat print terse/.test(cmd)) return '0 chain=srcnat action=masquerade comment="router:masquerade"';
+      if (/interface list member print detail/.test(cmd)) {
+        return guardWansApplied.map((w, i) =>
+          ` ${i}   ;;; ${wanMemberComment(w)}\n      list=WAN interface=${w.interface}\n`).join('');
+      }
+      if (/^\/ip route print detail/.test(cmd)) return routeDetail;
+      if (/^\/system scheduler print detail/.test(cmd)) return ` 0   name="wan-guard" interval=10s comment="router:wan-guard"\n`;
+      if (/^\/system script print detail.*router:wan-guard/.test(cmd)) {
+        return ` 0 name="wan-guard" owner="admin" comment="router:wan-guard" source=\n       ${wanGuardScript(guardWansApplied, failoverSettings(guardCfgFull.failover)).split('\n').join('\r\n       ')}\n`;
+      }
+      return '';
+    }
+  };
+  const backedUp = await backupRouterConfig(roundTrip);
+  test('backup reads several probe routes back into probes, and a single one back into probe', () => {
+    const primary = backedUp.wan.find(w => w.name === 'primary');
+    const backup = backedUp.wan.find(w => w.name === 'backup');
+    assert.deepStrictEqual(primary.probes, ['8.8.8.8', '9.9.9.9']);
+    assert.strictEqual(primary.probe, undefined);
+    assert.deepStrictEqual(backup.probes, ['1.1.1.1', '208.67.222.222']);
+  });
+  test('backup reads the guard settings into a failover block', () => {
+    assert.deepStrictEqual(backedUp.failover, { checkInterval: '10s', failAfter: 2, recoverAfter: '15m' });
+  });
+  test('the backed-up config validates and normalises to the same probes (idempotent re-apply)', () => {
+    // The fixture has no static-address object to read the address from; add it as a person would.
+    const restored = {
+      lan: noResolverBase.lan,
+      wan: backedUp.wan.map(w => (w.type === 'static' ? { ...w, address: '192.168.1.2/24' } : w)),
+      failover: backedUp.failover
+    };
+    assert.deepStrictEqual(validateRouterConfig(restored).errors, []);
+    const again = normalizeWans(restored.wan, wanOptions(restored));
+    assert.deepStrictEqual(again.map(w => w.probes), guardWansApplied.map(w => w.probes));
+  });
+  const noGuardBackup = await backupRouterConfig({
+    async exec(cmd) {
+      if (/^\/system (scheduler|script) print/.test(cmd)) return '';
+      return roundTrip.exec(cmd);
+    }
+  });
+  test('a device without the guard backs up with no failover key at all', () => {
+    assert.ok(!('failover' in noGuardBackup));
+  });
+  const single = await backupRouterConfig({
+    async exec(cmd) {
+      if (/nat print terse/.test(cmd)) return '0 chain=srcnat action=masquerade comment="router:masquerade"';
+      if (/interface list member print detail/.test(cmd)) return ' 0   ;;; wan:a type=dhcp distance=1 probe=8.8.8.8\n      list=WAN interface=ether1\n';
+      return '';
+    }
+  });
+  test('a single-probe config still backs up as probe: x', () => {
+    assert.strictEqual(single.wan[0].probe, '8.8.8.8');
+    assert.strictEqual(single.wan[0].probes, undefined);
+  });
+  test('the member comment keeps extra probes when the link is down, and omits them otherwise', () => {
+    assert.ok(wanMemberComment(guardWansApplied[0]).includes('probes=8.8.8.8,9.9.9.9'));
+    assert.ok(!wanMemberComment(normalizeWans(staticWans)[0]).includes('probes='));
+    assert.deepStrictEqual(parseWanMemberComment(wanMemberComment(guardWansApplied[0])).probes, ['8.8.8.8', '9.9.9.9']);
   });
 
   console.log('\n=== MSS clamp commands ===');

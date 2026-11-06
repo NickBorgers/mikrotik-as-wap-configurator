@@ -268,6 +268,68 @@ there indefinitely, satisfied that the modem still answers.
 Give every uplink its own probe address. Two uplinks sharing one address would
 fight over the same probe route. The tool rejects that at validation time.
 
+### Calming a flapping uplink: `probes` and `failover`
+
+By default one lost probe address is enough: `check-gateway=ping` marks the
+route down after two failed pings, and the first reply brings it straight
+back. An uplink that loses a single address in bursts, with every other
+destination fine, therefore flaps between primary and backup, and a failover
+notifier floods. Two optional settings add hysteresis.
+
+```yaml
+wan:
+  - name: primary
+    type: wifi
+    band: 2.4GHz
+    ssid: "Building WiFi"
+    passphrase: secret-here
+    distance: 1
+    probes: [8.8.8.8, 9.9.9.9]   # several targets; probe: x is a one-item list
+
+failover:                         # leave out for the behaviour described above
+  checkInterval: 10s              # default
+  failAfter: 2                    # default
+  recoverAfter: 15m               # default
+```
+
+`probes` lists the addresses to ping, each pinned to its uplink by its own /32
+route (`wan:<name> probe`, `probe2`, `probe3`). The first is also the default
+route's gateway, so a dead link is still caught instantly. Set `probe` or
+`probes`, not both. Every address must be unique across all uplinks. With a
+`failover` block and only `probe` (or nothing) set, an uplink is topped up to
+two probes from the default pool (8.8.8.8, 1.1.1.1, 9.9.9.9, 208.67.222.222),
+skipping your `lan.dns` servers; when the pool runs out it keeps one.
+
+With `failover`, the default routes no longer carry `check-gateway=ping`.
+A `wan-guard` script and scheduler (commented `router:wan-guard`, like
+`wan-notify`) decide instead and enable or disable each default route:
+
+| | Rule |
+|---|---|
+| Check | every `checkInterval`, ping every probe of the uplink through the main table (the pinned probe routes carry them, so it works while the default route is disabled) |
+| Up to down | `failAfter` checks in a row in which **every** probe failed. One answering probe resets the count, so one dead address never fails an uplink |
+| Down to up | **every** probe answering, continuously, for `recoverAfter`. Any check that is not a full success restarts the clock |
+| Stays on backup | at least `recoverAfter` after the failure, and until the primary has been steady that long |
+| Last route | the lowest-priority uplink is never guarded, and the last enabled default route is never disabled |
+
+With the defaults, a path that dies is detected in about 20-25 s (two checks
+10 s apart) and a recovered uplink takes over again after 15 minutes of clean
+checks. A dead link (cable pulled) is still caught in about a second. Every
+transition is logged: `/log print where message~"wan-guard"`.
+
+Things to know:
+
+- A disabled route is inactive, so `wan-notify` sees the backup as active and
+  reports `primary -> backup` correctly. A total outage still reads `none`.
+- The route's own enabled flag is the up/down state. A re-apply recreates the
+  routes enabled and clears the counters, so uplinks start UP and must earn a
+  DOWN again; a reboot resets the recovery period, which is the safe direction.
+- Time is `/system resource` uptime, which an NTP step cannot disturb.
+- Needs the scheduler, which `device-mode: home` disables; see below.
+- Removing the `failover` block removes the script and scheduler, re-enables
+  every default route and puts `check-gateway=ping` back.
+- Backup writes `probes` and the `failover` block back out.
+
 ### What failover does and does not do
 
 Failover here is fast, not invisible. Each uplink has its own public address, so
