@@ -710,8 +710,8 @@ test('recovery needs EVERY probe, and any other result restarts the clock', () =
 });
 test('the lowest-priority uplink is never guarded, and the last enabled route is never disabled', () => {
   assert.ok(!guardSrc.includes('# backup:'), 'no block for the lowest-priority uplink');
-  assert.ok(guardSrc.includes('[/ip route find comment="wan:backup default" disabled=no]'), 'it still counts as enabled');
-  assert.ok(/disabled=no\]\]\) > 1\) do=\{\n\s+\/ip route disable/.test(guardSrc), 'disable only if more than one is enabled');
+  assert.ok(guardSrc.includes('[/ip route find comment="wan:backup default" !disabled]'), 'it still counts as enabled');
+  assert.ok(/!disabled\]\]\) > 1\) do=\{\n\s+\/ip route disable/.test(guardSrc), 'disable only if more than one is enabled');
   assert.ok(guardSrc.includes('failing but is the last enabled default route, leaving it on'));
 });
 test('three uplinks: the two best are guarded, the third is not', () => {
@@ -1129,7 +1129,7 @@ test('omitting mssClamp is valid and leaves it on', () => {
     assert.deepStrictEqual(goneProblems, []);
     assert.strictEqual(guardGone.scripts.length, 0);
     assert.strictEqual(guardGone.schedulers.length, 0);
-    assert.ok(guardGone.commands.includes('/ip route enable [find comment~"^wan:.* default" disabled=yes]'));
+    assert.ok(guardGone.commands.includes('/ip route enable [find comment~"^wan:.* default" disabled]'));
     assert.ok(guardGone.commands.includes('/ip route set [find comment~"^wan:.* default"] check-gateway=ping'));
   });
   const neverHad = fakeDevice();
