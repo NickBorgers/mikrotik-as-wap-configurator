@@ -1,5 +1,32 @@
 # Changelog
 
+## [6.4.2] - 2026-11-18 - Fix: Channel Settings Never Reached Radios With txPower
+
+`applyBandSettings` sent one line:
+`/interface/wifi set <iface> channel.frequency=<f> channel.tx-power=<n> channel.width=<w>`.
+RouterOS 7.21 has no `channel.tx-power`; tx-power is `configuration.tx-power`.
+RouterOS rejected the whole line with `expected end of command (line 1 column 50)`,
+so frequency and width were never applied either. The reply came back with exit
+status 0, so `exec()` resolved and the apply logged "✓ Applied 5GHz settings".
+Every radio with a `txPower` (controller radios, and CAP radios configured through
+the controller) kept whatever channel it already had. Radios without `txPower`
+were not affected. Found live on a cAP ax (RouterOS 7.21, wifi-qcom) when a move
+from channel 100 to 149 did nothing.
+
+### What changed
+- `applyBandSettings` sends two `set` commands: `channel.frequency`/`channel.width`,
+  then `configuration.tx-power`/`configuration.country`. A problem with tx-power or
+  country can no longer block the channel. (`channel.country` moved to
+  `configuration.country` too, matching every other code path.)
+- New `execStrict()` in `lib/ssh-client.js`: like `exec()`, but also rejects when a
+  line of output starts with a RouterOS CLI error (`expected end of command`,
+  `syntax error`, `input does not match any value`, `bad command name`, `failure:`,
+  `no such item`, `invalid value`, `ambiguous value`). Opt-in, used only by
+  `applyBandSettings`. `exec()` is unchanged, so `remove [find ...]`, reads, and
+  `execIdempotent()` behave exactly as before.
+- `applyBandSettings` returns `true`/`false`. The CAPsMAN final channel pass no
+  longer prints "channel applied" when it was not.
+
 ## [6.4.1] - 2026-11-06 - Fix: wan-guard Could Never Disable A Dead Uplink
 
 The guard counted enabled default routes with `find ... disabled=no`. On

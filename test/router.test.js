@@ -2690,6 +2690,143 @@ test('omitting mssClamp is valid and leaves it on', () => {
       'the regression that broke 6.2.5 applies must stay fixed');
   });
 
+  console.log('\n=== Band settings reach the radio (6.4.2) ===');
+  {
+    const { applyBandSettings } = require('../lib/wifi-config');
+    const { routerOsCliError, execStrict } = require('../lib/ssh-client');
+
+    // Exact reply from a cAP ax on RouterOS 7.21 stable (wifi-qcom), 2026-11-18,
+    // to the command 6.4.1 sent. Column 50 is where `channel.tx-power` starts.
+    // Exit status was 0, so exec() resolved and the caller logged "✓ Applied".
+    const PARSE_ERROR = 'expected end of command (line 1 column 50)\r\n';
+
+    // A fake device that behaves like 7.21: it rejects any line that contains
+    // channel.tx-power with the text above and exit 0, and accepts the rest.
+    const fakeRadio = () => {
+      const sent = [];
+      return {
+        sent,
+        exec: async cmd => {
+          sent.push(cmd);
+          return /channel\.tx-power/.test(cmd) ? PARSE_ERROR : '';
+        }
+      };
+    };
+    const quietly = async fn => {
+      const log = console.log;
+      const lines = [];
+      console.log = (...a) => lines.push(a.join(' '));
+      try { return { result: await fn(), lines }; } finally { console.log = log; }
+    };
+
+    const full = fakeRadio();
+    const fullRun = await quietly(() => applyBandSettings(
+      full, '5GHz', 'wifi1', { channel: 149, txPower: 17, width: '20/40/80mhz' }, '/interface/wifi'));
+
+    test('channel.tx-power is never sent', () => {
+      assert.ok(full.sent.every(c => !/channel\.tx-power/.test(c)), full.sent.join('\n'));
+    });
+    test('channel and width go in their own set, with no tx-power on that line', () => {
+      assert.ok(full.sent.includes('/interface/wifi set wifi1 channel.frequency=5745 channel.width=20/40/80mhz'),
+        full.sent.join('\n'));
+    });
+    test('tx-power is sent as configuration.tx-power in a separate set', () => {
+      assert.ok(full.sent.includes('/interface/wifi set wifi1 configuration.tx-power=17'), full.sent.join('\n'));
+    });
+    test('a full band config against a 7.21-like device reports success', () => {
+      assert.strictEqual(fullRun.result, true, fullRun.lines.join('\n'));
+    });
+
+    const noTx = fakeRadio();
+    await quietly(() => applyBandSettings(noTx, '2.4GHz', 'wifi2', { channel: 11, width: '20mhz' }, '/interface/wifi'));
+    test('a radio with no txPower still gets exactly one channel set', () => {
+      assert.deepStrictEqual(noTx.sent, ['/interface/wifi set wifi2 channel.frequency=2462 channel.width=20mhz']);
+    });
+
+    const withCountry = fakeRadio();
+    await quietly(() => applyBandSettings(withCountry, '5GHz', 'wifi1', { txPower: 10, country: 'United States' }, '/interface/wifi'));
+    test('country goes with tx-power under configuration., never channel.', () => {
+      assert.deepStrictEqual(withCountry.sent,
+        ['/interface/wifi set wifi1 configuration.tx-power=10 configuration.country="United States"']);
+    });
+
+    // The device rejects the tx-power line. The channel line must still land,
+    // and the failure must be reported, not logged as "✓ Applied".
+    const txRejected = {
+      sent: [],
+      exec: async cmd => { txRejected.sent.push(cmd); return /tx-power/.test(cmd) ? PARSE_ERROR : ''; }
+    };
+    const txRun = await quietly(() => applyBandSettings(
+      txRejected, '5GHz', 'wifi1', { channel: 149, txPower: 17, width: '20mhz' }, '/interface/wifi'));
+    test('a rejected tx-power cannot block channel and width', () => {
+      assert.ok(txRejected.sent.some(c => /channel\.frequency=5745/.test(c) && !/tx-power/.test(c)), txRejected.sent.join('\n'));
+      assert.ok(txRun.lines.some(l => /^✓ Applied 5GHz settings: channel\.frequency=5745, channel\.width=20mhz$/.test(l)),
+        txRun.lines.join('\n'));
+    });
+    test('a rejection with exit 0 is reported as a failure, not "✓ Applied"', () => {
+      assert.strictEqual(txRun.result, false);
+      assert.ok(!txRun.lines.some(l => /^✓.*tx-power/.test(l)), txRun.lines.join('\n'));
+      assert.ok(txRun.lines.some(l => /⚠️.*NOT applied.*expected end of command/.test(l)), txRun.lines.join('\n'));
+    });
+
+    // The bug report's list of RouterOS CLI error replies.
+    const CLI_ERRORS = [
+      'expected end of command (line 1 column 50)',
+      'syntax error (line 1 column 7)',
+      'input does not match any value of mode',
+      'bad command name bogus (line 1 column 2)',
+      'failure: not allowed by device-mode (/ip/service/set; line 1)',
+      'no such item (/interface/wifi/set; line 1)',
+      'invalid value for argument frequency'
+    ];
+    for (const text of CLI_ERRORS) {
+      const r = await (async () => {
+        try { await execStrict({ exec: async () => `${text}\r\n` }, '/interface/wifi set wifi1 x=1'); return null; }
+        catch (e) { return e.message; }
+      })();
+      test(`execStrict rejects exit-0 output: ${text.split(' (')[0]}`, () => {
+        assert.ok(r, `must not resolve: ${text}`);
+        assert.ok(r.includes(text), `the device's own explanation must survive: ${r}`);
+      });
+    }
+
+    const okOut = await execStrict({ exec: async () => '' }, '/interface/wifi set wifi1 channel.width=20mhz');
+    test('execStrict resolves an empty (successful) set', () => assert.strictEqual(okOut, ''));
+
+    const passLeak = await (async () => {
+      try {
+        await execStrict({ exec: async () => 'expected end of command (line 1 column 9)' },
+          '/interface/wifi set wifi1 security.passphrase="Q#F4Gm8jFM" bogus');
+        return '';
+      } catch (e) { return e.message; }
+    })();
+    test('execStrict never puts the command (or a passphrase) in its error', () => {
+      assert.ok(passLeak && !/Q#F4Gm8jFM|passphrase/.test(passLeak), passLeak);
+    });
+
+    const thrown = await (async () => {
+      try { await execStrict({ exec: async () => { throw new Error('RouterOS rejected the command (exit 1): x'); } }, '/x set'); return null; }
+      catch (e) { return e.message; }
+    })();
+    test('execStrict still rejects everything exec() rejects', () => assert.ok(/exit 1/.test(thrown || ''), thrown));
+
+    test('error words mid-line in real data are NOT CLI errors', () => {
+      // Only start-of-line replies count. `/log print` lines start with a time.
+      const logLines = '18:25:02 system,error,critical router rebooted without proper shutdown\n'
+        + '18:26:10 script,warning wan-notify: send failed, failure: no such item\n';
+      assert.strictEqual(routerOsCliError(logLines), null);
+      assert.strictEqual(routerOsCliError(''), null);
+      assert.strictEqual(routerOsCliError(undefined), null);
+    });
+
+    // The global rule stays "decide by exit code". Only execStrict() reads text.
+    // (Awaited here: test() is synchronous and does not await a returned promise.)
+    const plainOut = await fakeSsh({ stdout: PARSE_ERROR, code: 0 }).exec('/x');
+    test('plain exec() is unchanged: exit 0 with error text still resolves', () => {
+      assert.strictEqual(plainOut, PARSE_ERROR);
+    });
+  }
+
   console.log('\n=== WiFi uplink (station mode) ===');
   {
     const {

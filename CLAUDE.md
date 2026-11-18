@@ -424,6 +424,19 @@ const BAND_TO_INTERFACE = {
   exit-status request) is distinct from a non-zero one. It still rejects - unknown is not
   success - but with its own message, not a misleading "exit null".
 
+**A RouterOS Parse Error Can Exit 0 (found in 6.4.2)**
+- Live on a cAP ax, RouterOS 7.21 stable, wifi-qcom: a `set` with an unknown property
+  (`channel.tx-power`) printed `expected end of command (line 1 column 50)` and the
+  configurator reported success, so the exit status was 0. This contradicts the 6.2.4
+  finding above (7.18.2 Chateau). Do not assume the exit code catches every rejection.
+- Do NOT turn `exec()` into a text matcher; the rule above still holds for reads.
+  For `set` commands whose silent failure matters, use `execStrict()` from
+  `lib/ssh-client.js`. It matches only start-of-line CLI error replies. Never use it for
+  `print`, `:put` or `export`.
+- tx-power and country are `configuration.tx-power` / `configuration.country`, NOT
+  `channel.*`. RouterOS rejects the WHOLE line for one bad property, so
+  `applyBandSettings()` sends the channel and the radio properties as separate `set`s.
+
 **RouterOS `get` MUST Be Wrapped In `:put` (learned the hard way in 6.2.2)**
 - `/interface get [find name=X] running` sent over an SSH exec prints NOTHING. RouterOS
   returns the value to an interactive console, not to stdout. Always:
