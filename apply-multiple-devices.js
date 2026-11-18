@@ -574,13 +574,13 @@ async function main() {
           : deploymentSsids;  // Fall back to deployment-level SSIDs
 
         try {
-          // false means the fallback was not fully applied (for example a
-          // rejected channel). The other CAPs are still configured; the
-          // summary and exit code report this one.
-          const fallbackOk = await configureLocalCapFallback(capConfig, capSsids, deploymentCountry || 'United States');
-          if (fallbackOk === false) {
+          // Only a RouterOS rejection of a channel/radio setting fails the CAP.
+          // Other fallback problems (no WiFi package, connection error) stay
+          // non-fatal: CAPsMAN still serves the CAP.
+          const fallback = await configureLocalCapFallback(capConfig, capSsids, deploymentCountry || 'United States');
+          if (fallback && fallback.channelFailures && fallback.channelFailures.length > 0) {
             markDegraded(results, devices.indexOf(cap) + 1, cap.device.host, 'cap',
-              'local WiFi fallback not fully applied (see output above)');
+              `local WiFi fallback: ${fallback.channelFailures.join('; ')}`);
           }
         } catch (error) {
           // Non-fatal - CAP still works with controller, just no fallback

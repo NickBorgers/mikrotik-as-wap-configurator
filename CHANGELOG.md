@@ -34,11 +34,20 @@ from channel 100 to 149 did nothing.
   `configureCapInterfacesOnController` throws an error carrying `channelFailures`;
   `configureLocalCapFallback` returns `false`. `apply-multiple-devices.js` turns
   these into a failed device in the summary (and exit code 1) with a new
-  `markDegraded()` helper, instead of only warning. A `false` from the local
-  fallback was previously ignored for any cause; it now fails the device too.
+  `markDegraded()` helper, instead of only warning. The local
+  fallback's result is refined under ERR-02 below.
 - `applyBandSettings` honours `frequency` (MHz) when `channel` is absent, so a
   frequency-only config is no longer silently skipped. If both are set, `channel`
   wins, as in `lib/router.js`.
+- WIFI-02: a `channel` that is not in the band's channel map no longer silently
+  wins. It falls back to `frequency` when one is given (with a warning); with no
+  frequency it logs a warning and `applyBandSettings` returns `false`, so callers
+  record it like a RouterOS rejection. Width and tx-power are still applied.
+- ERR-02: `configureLocalCapFallback` now returns `{ ok, channelFailures }`.
+  `apply-multiple-devices.js` fails the CAP only when `channelFailures` is
+  non-empty. Other fallback failures (no WiFi package, connection error) stay
+  warnings, because CAPsMAN still serves the CAP. This replaces the earlier
+  "any `false` fails the device" behaviour described above.
 - `txPower: 0` is now sent (`!== undefined` instead of a truthiness check).
   `channel` keeps the truthiness check on purpose: 0 is not a channel.
 

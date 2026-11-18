@@ -2852,6 +2852,22 @@ test('omitting mssClamp is valid and leaves it on', () => {
     test('an unsafe frequency is refused, not sent', () => {
       assert.ok(unsafe.error, 'must throw');
     });
+    const unmappedOnly = await sentTo('5GHz', { channel: 999, width: '20mhz', txPower: 10 });
+    test('WIFI-02: an unmapped channel with no frequency returns false and still applies width and tx-power', () => {
+      assert.strictEqual(unmappedOnly.result, false);
+      assert.deepStrictEqual(unmappedOnly.sent, [
+        '/interface/wifi set wifi1 channel.width=20mhz',
+        '/interface/wifi set wifi1 configuration.tx-power=10'
+      ]);
+    });
+    const unmappedFreq = await sentTo('5GHz', { channel: 999, frequency: 5745, txPower: 10 });
+    test('WIFI-02: an unmapped channel falls back to frequency and returns true', () => {
+      assert.strictEqual(unmappedFreq.result, true);
+      assert.deepStrictEqual(unmappedFreq.sent, [
+        '/interface/wifi set wifi1 channel.frequency=5745',
+        '/interface/wifi set wifi1 configuration.tx-power=10'
+      ]);
+    });
     const zero = await sentTo('2.4GHz', { txPower: 0 });
     test('txPower 0 is sent', () => {
       assert.deepStrictEqual(zero.sent, ['/interface/wifi set wifi1 configuration.tx-power=0']);
@@ -2905,12 +2921,51 @@ test('omitting mssClamp is valid and leaves it on', () => {
     const capCfg = { host: '10.0.0.2', identity: 'wap', wifi: { '5GHz': { channel: 149 } } };
 
     const fbBad = await drive(true, () => capsman.configureLocalCapFallback(capCfg, ssids, 'United States'));
-    test('configureLocalCapFallback returns false when the channel is rejected', () => assert.strictEqual(fbBad.value, false));
+    test('configureLocalCapFallback reports channelFailures when the channel is rejected', () => {
+      assert.strictEqual(fbBad.value.ok, false);
+      assert.ok(fbBad.value.channelFailures.length > 0);
+    });
     test('...but still configured the SSID first (no abort halfway)', () => {
       assert.ok(fbBad.sent.some(c => /ssid=/.test(c) || /configuration\.ssid/.test(c)), fbBad.sent.join('\n'));
     });
     const fbOk = await drive(false, () => capsman.configureLocalCapFallback(capCfg, ssids, 'United States'));
-    test('configureLocalCapFallback returns true when the channel is accepted', () => assert.strictEqual(fbOk.value, true));
+    test('configureLocalCapFallback is ok with no channelFailures when the channel is accepted', () => {
+      assert.deepStrictEqual(fbOk.value, { ok: true, channelFailures: [] });
+    });
+
+    // ERR-02: a failure that is NOT a channel rejection must not look like one.
+    // Here the package is wifiwave2 (unsupported): the function returns ok:false,
+    // but channelFailures stays empty, so apply-multiple-devices.js only warns.
+    const noPkg = await drive(false, async () => {
+      const inner = Ssh.prototype.exec;
+      Ssh.prototype.exec = async function (cmd) {
+        if (/package print/.test(cmd)) return '0 name="wifiwave2" version="7.12"';
+        return inner.call(this, cmd);
+      };
+      return capsman.configureLocalCapFallback(capCfg, ssids, 'United States');
+    });
+    test('a WiFi package detection failure is ok:false with NO channelFailures (stays non-fatal)', () => {
+      assert.deepStrictEqual(noPkg.value, { ok: false, channelFailures: [] });
+    });
+    const connFail = await drive(false, async () => {
+      Ssh.prototype.connect = async () => { throw new Error('connection refused'); };
+      return capsman.configureLocalCapFallback(capCfg, ssids, 'United States');
+    });
+    test('a connection failure is ok:false with NO channelFailures (stays non-fatal)', () => {
+      assert.deepStrictEqual(connFail.value, { ok: false, channelFailures: [] });
+    });
+
+    // What apply-multiple-devices.js does with the result (same condition).
+    const decide = (results, r) => {
+      if (r && r.channelFailures && r.channelFailures.length > 0) markDegraded(results, 2, 'h', 'cap', r.channelFailures.join('; '));
+    };
+    const r1 = [{ index: 2, host: 'h', role: 'cap', success: true }];
+    decide(r1, noPkg.value);
+    test('package-detection failure does NOT mark the device failed', () => assert.strictEqual(r1[0].success, true));
+    decide(r1, connFail.value);
+    test('connection failure does NOT mark the device failed', () => assert.strictEqual(r1[0].success, true));
+    decide(r1, fbBad.value);
+    test('a channel rejection DOES mark the device failed', () => assert.strictEqual(r1[0].success, false));
 
     const capBad = await drive(true, () => capsman.configureCap({
       host: '10.0.0.2', identity: 'wap', capsman: { controllerAddresses: ['10.0.0.1'] }, wifi: { '5GHz': { channel: 149 } }
