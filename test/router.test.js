@@ -2690,6 +2690,314 @@ test('omitting mssClamp is valid and leaves it on', () => {
       'the regression that broke 6.2.5 applies must stay fixed');
   });
 
+  console.log('\n=== Band settings reach the radio (6.4.2) ===');
+  {
+    const { applyBandSettings } = require('../lib/wifi-config');
+    const { routerOsCliError, execStrict } = require('../lib/ssh-client');
+
+    // Exact reply from a cAP ax on RouterOS 7.21 stable (wifi-qcom), 2026-11-18,
+    // to the command 6.4.1 sent. Column 50 is where `channel.tx-power` starts.
+    // Exit status was 0, so exec() resolved and the caller logged "✓ Applied".
+    const PARSE_ERROR = 'expected end of command (line 1 column 50)\r\n';
+
+    // A fake device that behaves like 7.21: it rejects any line that contains
+    // channel.tx-power with the text above and exit 0, and accepts the rest.
+    const fakeRadio = () => {
+      const sent = [];
+      return {
+        sent,
+        exec: async cmd => {
+          sent.push(cmd);
+          return /channel\.tx-power/.test(cmd) ? PARSE_ERROR : '';
+        }
+      };
+    };
+    const quietly = async fn => {
+      const log = console.log;
+      const lines = [];
+      console.log = (...a) => lines.push(a.join(' '));
+      try { return { result: await fn(), lines }; } finally { console.log = log; }
+    };
+
+    const full = fakeRadio();
+    const fullRun = await quietly(() => applyBandSettings(
+      full, '5GHz', 'wifi1', { channel: 149, txPower: 17, width: '20/40/80mhz' }, '/interface/wifi'));
+
+    test('channel.tx-power is never sent', () => {
+      assert.ok(full.sent.every(c => !/channel\.tx-power/.test(c)), full.sent.join('\n'));
+    });
+    test('channel and width go in their own set, with no tx-power on that line', () => {
+      assert.ok(full.sent.includes('/interface/wifi set wifi1 channel.frequency=5745 channel.width=20/40/80mhz'),
+        full.sent.join('\n'));
+    });
+    test('tx-power is sent as configuration.tx-power in a separate set', () => {
+      assert.ok(full.sent.includes('/interface/wifi set wifi1 configuration.tx-power=17'), full.sent.join('\n'));
+    });
+    test('a full band config against a 7.21-like device reports success', () => {
+      assert.strictEqual(fullRun.result, true, fullRun.lines.join('\n'));
+    });
+
+    const noTx = fakeRadio();
+    await quietly(() => applyBandSettings(noTx, '2.4GHz', 'wifi2', { channel: 11, width: '20mhz' }, '/interface/wifi'));
+    test('a radio with no txPower still gets exactly one channel set', () => {
+      assert.deepStrictEqual(noTx.sent, ['/interface/wifi set wifi2 channel.frequency=2462 channel.width=20mhz']);
+    });
+
+    const withCountry = fakeRadio();
+    await quietly(() => applyBandSettings(withCountry, '5GHz', 'wifi1', { txPower: 10, country: 'United States' }, '/interface/wifi'));
+    test('country goes with tx-power under configuration., never channel.', () => {
+      assert.deepStrictEqual(withCountry.sent,
+        ['/interface/wifi set wifi1 configuration.tx-power=10 configuration.country="United States"']);
+    });
+
+    // The device rejects the tx-power line. The channel line must still land,
+    // and the failure must be reported, not logged as "✓ Applied".
+    const txRejected = {
+      sent: [],
+      exec: async cmd => { txRejected.sent.push(cmd); return /tx-power/.test(cmd) ? PARSE_ERROR : ''; }
+    };
+    const txRun = await quietly(() => applyBandSettings(
+      txRejected, '5GHz', 'wifi1', { channel: 149, txPower: 17, width: '20mhz' }, '/interface/wifi'));
+    test('a rejected tx-power cannot block channel and width', () => {
+      assert.ok(txRejected.sent.some(c => /channel\.frequency=5745/.test(c) && !/tx-power/.test(c)), txRejected.sent.join('\n'));
+      assert.ok(txRun.lines.some(l => /^✓ Applied 5GHz settings: channel\.frequency=5745, channel\.width=20mhz$/.test(l)),
+        txRun.lines.join('\n'));
+    });
+    test('a rejection with exit 0 is reported as a failure, not "✓ Applied"', () => {
+      assert.strictEqual(txRun.result, false);
+      assert.ok(!txRun.lines.some(l => /^✓.*tx-power/.test(l)), txRun.lines.join('\n'));
+      assert.ok(txRun.lines.some(l => /⚠️.*NOT applied.*expected end of command/.test(l)), txRun.lines.join('\n'));
+    });
+
+    // The bug report's list of RouterOS CLI error replies.
+    const CLI_ERRORS = [
+      'expected end of command (line 1 column 50)',
+      'syntax error (line 1 column 7)',
+      'input does not match any value of mode',
+      'bad command name bogus (line 1 column 2)',
+      'failure: not allowed by device-mode (/ip/service/set; line 1)',
+      'no such item (/interface/wifi/set; line 1)',
+      'invalid value for argument frequency'
+    ];
+    for (const text of CLI_ERRORS) {
+      const r = await (async () => {
+        try { await execStrict({ exec: async () => `${text}\r\n` }, '/interface/wifi set wifi1 x=1'); return null; }
+        catch (e) { return e.message; }
+      })();
+      test(`execStrict rejects exit-0 output: ${text.split(' (')[0]}`, () => {
+        assert.ok(r, `must not resolve: ${text}`);
+        assert.ok(r.includes(text), `the device's own explanation must survive: ${r}`);
+      });
+    }
+
+    const okOut = await execStrict({ exec: async () => '' }, '/interface/wifi set wifi1 channel.width=20mhz');
+    test('execStrict resolves an empty (successful) set', () => assert.strictEqual(okOut, ''));
+
+    const passLeak = await (async () => {
+      try {
+        await execStrict({ exec: async () => 'expected end of command (line 1 column 9)' },
+          '/interface/wifi set wifi1 security.passphrase="Q#F4Gm8jFM" bogus');
+        return '';
+      } catch (e) { return e.message; }
+    })();
+    test('execStrict never puts the command (or a passphrase) in its error', () => {
+      assert.ok(passLeak && !/Q#F4Gm8jFM|passphrase/.test(passLeak), passLeak);
+    });
+
+    const thrown = await (async () => {
+      try { await execStrict({ exec: async () => { throw new Error('RouterOS rejected the command (exit 1): x'); } }, '/x set'); return null; }
+      catch (e) { return e.message; }
+    })();
+    test('execStrict still rejects everything exec() rejects', () => assert.ok(/exit 1/.test(thrown || ''), thrown));
+
+    test('error words mid-line in real data are NOT CLI errors', () => {
+      // Only start-of-line replies count. `/log print` lines start with a time.
+      const logLines = '18:25:02 system,error,critical router rebooted without proper shutdown\n'
+        + '18:26:10 script,warning wan-notify: send failed, failure: no such item\n';
+      assert.strictEqual(routerOsCliError(logLines), null);
+      assert.strictEqual(routerOsCliError(''), null);
+      assert.strictEqual(routerOsCliError(undefined), null);
+    });
+
+    // The global rule stays "decide by exit code". Only execStrict() reads text.
+    // (Awaited here: test() is synchronous and does not await a returned promise.)
+    const plainOut = await fakeSsh({ stdout: PARSE_ERROR, code: 0 }).exec('/x');
+    test('plain exec() is unchanged: exit 0 with error text still resolves', () => {
+      assert.strictEqual(plainOut, PARSE_ERROR);
+    });
+  }
+
+  console.log('\n=== Frequency-only and zero values (6.4.2 review) ===');
+  {
+    const { applyBandSettings } = require('../lib/wifi-config');
+    const sentTo = async (band, cfg) => {
+      const sent = [];
+      const log = console.log; console.log = () => {};
+      let result;
+      try { result = await applyBandSettings({ exec: async c => { sent.push(c); return ''; } }, band, 'wifi1', cfg, '/interface/wifi'); }
+      finally { console.log = log; }
+      return { sent, result };
+    };
+
+    const freqOnly = await sentTo('5GHz', { frequency: 5745 });
+    test('a frequency-only band config sends channel.frequency', () => {
+      assert.deepStrictEqual(freqOnly.sent, ['/interface/wifi set wifi1 channel.frequency=5745']);
+      assert.strictEqual(freqOnly.result, true);
+    });
+    const both = await sentTo('5GHz', { channel: 149, frequency: 5180 });
+    test('channel wins over frequency when both are given (same as lib/router.js)', () => {
+      assert.deepStrictEqual(both.sent, ['/interface/wifi set wifi1 channel.frequency=5745']);
+    });
+    const unsafe = await sentTo('5GHz', { frequency: '5745; /system reset' }).catch(e => ({ error: e }));
+    test('an unsafe frequency is refused, not sent', () => {
+      assert.ok(unsafe.error, 'must throw');
+    });
+    const unmappedOnly = await sentTo('5GHz', { channel: 999, width: '20mhz', txPower: 10 });
+    test('WIFI-02: an unmapped channel with no frequency returns false and still applies width and tx-power', () => {
+      assert.strictEqual(unmappedOnly.result, false);
+      assert.deepStrictEqual(unmappedOnly.sent, [
+        '/interface/wifi set wifi1 channel.width=20mhz',
+        '/interface/wifi set wifi1 configuration.tx-power=10'
+      ]);
+    });
+    const unmappedFreq = await sentTo('5GHz', { channel: 999, frequency: 5745, txPower: 10 });
+    test('WIFI-02: an unmapped channel falls back to frequency and returns true', () => {
+      assert.strictEqual(unmappedFreq.result, true);
+      assert.deepStrictEqual(unmappedFreq.sent, [
+        '/interface/wifi set wifi1 channel.frequency=5745',
+        '/interface/wifi set wifi1 configuration.tx-power=10'
+      ]);
+    });
+    const zero = await sentTo('2.4GHz', { txPower: 0 });
+    test('txPower 0 is sent', () => {
+      assert.deepStrictEqual(zero.sent, ['/interface/wifi set wifi1 configuration.tx-power=0']);
+    });
+    const ch0 = await sentTo('5GHz', { channel: 0 });
+    test('channel 0 is not a channel and sends nothing', () => {
+      assert.deepStrictEqual(ch0.sent, []);
+      assert.strictEqual(ch0.result, true);
+    });
+  }
+
+  console.log('\n=== A rejected channel fails the operation (6.4.2 review) ===');
+  {
+    const { MikroTikSSH: Ssh } = require('../lib/ssh-client');
+    const capsman = require('../lib/capsman');
+    const { markDegraded } = require('../apply-multiple-devices');
+
+    // Stub the SSH class every caller constructs. The fake device accepts
+    // everything except a channel.frequency set, which it rejects the way
+    // RouterOS 7.21 does: text on stdout, exit 0.
+    const realProto = { connect: Ssh.prototype.connect, close: Ssh.prototype.close, exec: Ssh.prototype.exec };
+    const realSetTimeout = global.setTimeout;
+    const drive = async (rejectChannel, fn) => {
+      const sent = [];
+      Ssh.prototype.connect = async () => {};
+      Ssh.prototype.close = async () => {};
+      Ssh.prototype.exec = async function (cmd) {
+        sent.push(cmd);
+        if (/^:put/.test(cmd)) return 'true';
+        if (/package print/.test(cmd)) return '0 name="wifi-qcom" version="7.21"';
+        if (/cap print/.test(cmd)) return 'enabled: yes';
+        if (/interface\/wifi print terse without-paging/.test(cmd)) return '0 name="cap1-5g" disabled=no\n';
+        if (rejectChannel && /channel\.frequency/.test(cmd)) return 'expected end of command (line 1 column 40)';
+        return '';
+      };
+      global.setTimeout = (f) => realSetTimeout(f, 0);
+      const log = console.log, err = console.error;
+      console.log = () => {}; console.error = () => {};
+      try {
+        let outcome;
+        try { outcome = { value: await fn() }; } catch (e) { outcome = { error: e }; }
+        return { ...outcome, sent };
+      } finally {
+        console.log = log; console.error = err;
+        global.setTimeout = realSetTimeout;
+        Object.assign(Ssh.prototype, realProto);
+      }
+    };
+
+    const ssids = [{ ssid: 'a', passphrase: 'passphrase1', vlan: 100, bands: ['5GHz'] }];
+    const capCfg = { host: '10.0.0.2', identity: 'wap', wifi: { '5GHz': { channel: 149 } } };
+
+    const fbBad = await drive(true, () => capsman.configureLocalCapFallback(capCfg, ssids, 'United States'));
+    test('configureLocalCapFallback reports channelFailures when the channel is rejected', () => {
+      assert.strictEqual(fbBad.value.ok, false);
+      assert.ok(fbBad.value.channelFailures.length > 0);
+    });
+    test('...but still configured the SSID first (no abort halfway)', () => {
+      assert.ok(fbBad.sent.some(c => /ssid=/.test(c) || /configuration\.ssid/.test(c)), fbBad.sent.join('\n'));
+    });
+    const fbOk = await drive(false, () => capsman.configureLocalCapFallback(capCfg, ssids, 'United States'));
+    test('configureLocalCapFallback is ok with no channelFailures when the channel is accepted', () => {
+      assert.deepStrictEqual(fbOk.value, { ok: true, channelFailures: [] });
+    });
+
+    // ERR-02: a failure that is NOT a channel rejection must not look like one.
+    // Here the package is wifiwave2 (unsupported): the function returns ok:false,
+    // but channelFailures stays empty, so apply-multiple-devices.js only warns.
+    const noPkg = await drive(false, async () => {
+      const inner = Ssh.prototype.exec;
+      Ssh.prototype.exec = async function (cmd) {
+        if (/package print/.test(cmd)) return '0 name="wifiwave2" version="7.12"';
+        return inner.call(this, cmd);
+      };
+      return capsman.configureLocalCapFallback(capCfg, ssids, 'United States');
+    });
+    test('a WiFi package detection failure is ok:false with NO channelFailures (stays non-fatal)', () => {
+      assert.deepStrictEqual(noPkg.value, { ok: false, channelFailures: [] });
+    });
+    const connFail = await drive(false, async () => {
+      Ssh.prototype.connect = async () => { throw new Error('connection refused'); };
+      return capsman.configureLocalCapFallback(capCfg, ssids, 'United States');
+    });
+    test('a connection failure is ok:false with NO channelFailures (stays non-fatal)', () => {
+      assert.deepStrictEqual(connFail.value, { ok: false, channelFailures: [] });
+    });
+
+    // What apply-multiple-devices.js does with the result (same condition).
+    const decide = (results, r) => {
+      if (r && r.channelFailures && r.channelFailures.length > 0) markDegraded(results, 2, 'h', 'cap', r.channelFailures.join('; '));
+    };
+    const r1 = [{ index: 2, host: 'h', role: 'cap', success: true }];
+    decide(r1, noPkg.value);
+    test('package-detection failure does NOT mark the device failed', () => assert.strictEqual(r1[0].success, true));
+    decide(r1, connFail.value);
+    test('connection failure does NOT mark the device failed', () => assert.strictEqual(r1[0].success, true));
+    decide(r1, fbBad.value);
+    test('a channel rejection DOES mark the device failed', () => assert.strictEqual(r1[0].success, false));
+
+    const capBad = await drive(true, () => capsman.configureCap({
+      host: '10.0.0.2', identity: 'wap', capsman: { controllerAddresses: ['10.0.0.1'] }, wifi: { '5GHz': { channel: 149 } }
+    }));
+    test('configureCap throws when the channel is rejected', () => {
+      assert.ok(capBad.error && /channel\/radio settings not applied/.test(capBad.error.message), String(capBad.error));
+    });
+    const capOk = await drive(false, () => capsman.configureCap({
+      host: '10.0.0.2', identity: 'wap', capsman: { controllerAddresses: ['10.0.0.1'] }, wifi: { '5GHz': { channel: 149 } }
+    }));
+    test('configureCap succeeds when the channel is accepted', () => assert.strictEqual(capOk.value, true, String(capOk.error)));
+
+    const ctlCfg = { host: '10.0.0.1', ssids, wifi: { country: 'United States', '5GHz': { channel: 149 } } };
+    const ctlBad = await drive(true, () => capsman.configureCapInterfacesOnController(ctlCfg, []));
+    test('configureCapInterfacesOnController throws with channelFailures when the channel is rejected', () => {
+      assert.ok(ctlBad.error && Array.isArray(ctlBad.error.channelFailures) && ctlBad.error.channelFailures.length > 0, String(ctlBad.error));
+    });
+    const ctlOk = await drive(false, () => capsman.configureCapInterfacesOnController(ctlCfg, []));
+    test('configureCapInterfacesOnController returns true when the channel is accepted', () => assert.strictEqual(ctlOk.value, true, String(ctlOk.error)));
+
+    // The multi-device summary counts results[].success. markDegraded flips it.
+    const results = [{ index: 2, host: 'h', role: 'cap', success: true }];
+    markDegraded(results, 2, 'h', 'cap', 'fallback failed');
+    test('markDegraded turns an existing success into a failure the summary lists', () => {
+      assert.deepStrictEqual(results, [{ index: 2, host: 'h', role: 'cap', success: false, error: 'fallback failed' }]);
+    });
+    markDegraded(results, 2, 'h', 'cap', 'second');
+    test('markDegraded keeps an earlier error', () => assert.strictEqual(results[0].error, 'fallback failed; second'));
+    markDegraded(results, 9, 'x', 'cap', 'new');
+    test('markDegraded adds an entry when the device has none', () => assert.strictEqual(results.length, 2));
+  }
+
   console.log('\n=== WiFi uplink (station mode) ===');
   {
     const {

@@ -1,5 +1,56 @@
 # Changelog
 
+## [6.4.2] - 2026-11-18 - Fix: Channel Settings Never Reached Radios With txPower
+
+`applyBandSettings` sent one line:
+`/interface/wifi set <iface> channel.frequency=<f> channel.tx-power=<n> channel.width=<w>`.
+RouterOS 7.21 has no `channel.tx-power`; tx-power is `configuration.tx-power`.
+RouterOS rejected the whole line with `expected end of command (line 1 column 50)`,
+so frequency and width were never applied either. The reply came back with exit
+status 0, so `exec()` resolved and the apply logged "✓ Applied 5GHz settings".
+Every radio with a `txPower` (controller radios, and CAP radios configured through
+the controller) kept whatever channel it already had. Radios without `txPower`
+were not affected. Found live on a cAP ax (RouterOS 7.21, wifi-qcom) when a move
+from channel 100 to 149 did nothing.
+
+### What changed
+- `applyBandSettings` sends two `set` commands: `channel.frequency`/`channel.width`,
+  then `configuration.tx-power`/`configuration.country`. A problem with tx-power or
+  country can no longer block the channel. (`channel.country` moved to
+  `configuration.country` too, matching every other code path.)
+- New `execStrict()` in `lib/ssh-client.js`: like `exec()`, but also rejects when a
+  line of output starts with a RouterOS CLI error (`expected end of command`,
+  `syntax error`, `input does not match any value`, `bad command name`, `failure:`,
+  `no such item`, `invalid value`, `ambiguous value`). Opt-in, used only by
+  `applyBandSettings`. `exec()` is unchanged, so `remove [find ...]`, reads, and
+  `execIdempotent()` behave exactly as before.
+- `applyBandSettings` returns `true`/`false`. The CAPsMAN final channel pass no
+  longer prints "channel applied" when it was not.
+
+### Review fixes
+- A rejected channel now fails the operation (it used to end in "Complete").
+  Every caller of `applyBandSettings` collects the failure and finishes its
+  other work first. `configureCap` adds it to its validation errors (throws);
+  `configureCapInterfacesOnController` throws an error carrying `channelFailures`;
+  `configureLocalCapFallback` returns `false`. `apply-multiple-devices.js` turns
+  these into a failed device in the summary (and exit code 1) with a new
+  `markDegraded()` helper, instead of only warning. The local
+  fallback's result is refined under ERR-02 below.
+- `applyBandSettings` honours `frequency` (MHz) when `channel` is absent, so a
+  frequency-only config is no longer silently skipped. If both are set, `channel`
+  wins, as in `lib/router.js`.
+- WIFI-02: a `channel` that is not in the band's channel map no longer silently
+  wins. It falls back to `frequency` when one is given (with a warning); with no
+  frequency it logs a warning and `applyBandSettings` returns `false`, so callers
+  record it like a RouterOS rejection. Width and tx-power are still applied.
+- ERR-02: `configureLocalCapFallback` now returns `{ ok, channelFailures }`.
+  `apply-multiple-devices.js` fails the CAP only when `channelFailures` is
+  non-empty. Other fallback failures (no WiFi package, connection error) stay
+  warnings, because CAPsMAN still serves the CAP. This replaces the earlier
+  "any `false` fails the device" behaviour described above.
+- `txPower: 0` is now sent (`!== undefined` instead of a truthiness check).
+  `channel` keeps the truthiness check on purpose: 0 is not a channel.
+
 ## [6.4.1] - 2026-11-06 - Fix: wan-guard Could Never Disable A Dead Uplink
 
 The guard counted enabled default routes with `find ... disabled=no`. On

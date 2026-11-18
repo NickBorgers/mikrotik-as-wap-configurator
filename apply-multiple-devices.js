@@ -5,6 +5,21 @@ const yaml = require('js-yaml');
 const { configureMikroTik, configureCapInterfacesOnController, configureLocalCapFallback, configureAccessLists, extractHostname } = require('./mikrotik-no-vlan-filtering.js');
 const { validateRouterConfig } = require('./lib/validate-router');
 
+/**
+ * A later phase failed for a device that already has a result. Flip that
+ * result to failed (same shape the summary already prints) instead of listing
+ * the device twice. Adds a new failed entry if the device has none.
+ */
+function markDegraded(results, index, host, role, message) {
+  const existing = results.find(r => r.index === index && r.role === role);
+  if (existing) {
+    existing.error = existing.success ? message : `${existing.error}; ${message}`;
+    existing.success = false;
+  } else {
+    results.push({ index, host, role, success: false, error: message });
+  }
+}
+
 function loadConfig(configFile) {
   try {
     const fileContents = fs.readFileSync(configFile, 'utf8');
@@ -497,8 +512,16 @@ async function main() {
         await configureCapInterfacesOnController(controllerConfig, capDeviceConfigs);
         console.log('✓ CAP interface configuration complete');
       } catch (error) {
-        console.error(`⚠️  CAP interface configuration warning: ${error.message}`);
-        console.error('    CAP interfaces may need manual configuration.');
+        if (error.channelFailures) {
+          // RouterOS rejected a channel/radio setting. Everything else was
+          // configured, but the radios are not on the channel the YAML asks
+          // for: count it as a failure in the summary (and the exit code).
+          markDegraded(results, controllerIndex, controllerConfig.host, 'controller', error.message);
+          console.error(`✗ CAP interface channel settings failed: ${error.message}`);
+        } else {
+          console.error(`⚠️  CAP interface configuration warning: ${error.message}`);
+          console.error('    CAP interfaces may need manual configuration.');
+        }
       }
     }
 
@@ -551,7 +574,14 @@ async function main() {
           : deploymentSsids;  // Fall back to deployment-level SSIDs
 
         try {
-          await configureLocalCapFallback(capConfig, capSsids, deploymentCountry || 'United States');
+          // Only a RouterOS rejection of a channel/radio setting fails the CAP.
+          // Other fallback problems (no WiFi package, connection error) stay
+          // non-fatal: CAPsMAN still serves the CAP.
+          const fallback = await configureLocalCapFallback(capConfig, capSsids, deploymentCountry || 'United States');
+          if (fallback && fallback.channelFailures && fallback.channelFailures.length > 0) {
+            markDegraded(results, devices.indexOf(cap) + 1, cap.device.host, 'cap',
+              `local WiFi fallback: ${fallback.channelFailures.join('; ')}`);
+          }
         } catch (error) {
           // Non-fatal - CAP still works with controller, just no fallback
           console.error(`⚠️  Local fallback warning for ${cap.device.host}: ${error.message}`);
@@ -667,4 +697,6 @@ async function main() {
   }
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = { markDegraded };
