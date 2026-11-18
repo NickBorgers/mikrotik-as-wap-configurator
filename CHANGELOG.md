@@ -27,6 +27,21 @@ from channel 100 to 149 did nothing.
 - `applyBandSettings` returns `true`/`false`. The CAPsMAN final channel pass no
   longer prints "channel applied" when it was not.
 
+### Review fixes
+- A rejected channel now fails the operation (it used to end in "Complete").
+  Every caller of `applyBandSettings` collects the failure and finishes its
+  other work first. `configureCap` adds it to its validation errors (throws);
+  `configureCapInterfacesOnController` throws an error carrying `channelFailures`;
+  `configureLocalCapFallback` returns `false`. `apply-multiple-devices.js` turns
+  these into a failed device in the summary (and exit code 1) with a new
+  `markDegraded()` helper, instead of only warning. A `false` from the local
+  fallback was previously ignored for any cause; it now fails the device too.
+- `applyBandSettings` honours `frequency` (MHz) when `channel` is absent, so a
+  frequency-only config is no longer silently skipped. If both are set, `channel`
+  wins, as in `lib/router.js`.
+- `txPower: 0` is now sent (`!== undefined` instead of a truthiness check).
+  `channel` keeps the truthiness check on purpose: 0 is not a channel.
+
 ## [6.4.1] - 2026-11-06 - Fix: wan-guard Could Never Disable A Dead Uplink
 
 The guard counted enabled default routes with `find ... disabled=no`. On
